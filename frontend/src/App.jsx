@@ -2,6 +2,7 @@ import React from "react";
 import { BrowserRouter as Router, Routes, Route, Link } from "react-router-dom";
 import Home from "./pages/Home.jsx";
 import Invoice from "./pages/invoice.jsx";
+import ViewInvoice from "./pages/ViewInvoice.jsx";
 import "./App.css";
 
 function App() {
@@ -48,6 +49,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/invoice" element={<Invoice />} />
+          <Route path="/invoice-view" element={<ViewInvoice />} /> 
         </Routes>
       </div>
 

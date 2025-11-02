@@ -1,8 +1,11 @@
 import React, { useState } from "react";
 import "./invoice.css";
 import axios from "axios";
+import { useNavigate } from "react-router-dom"; // ✅ for navigation
 
 export default function Invoice() {
+  const navigate = useNavigate();
+
   const [invoiceData, setInvoiceData] = useState({
     invoiceNumber: "INV-" + new Date().getTime(),
     date: new Date().toISOString().split("T")[0],
@@ -15,7 +18,6 @@ export default function Invoice() {
   });
 
   const [loading, setLoading] = useState(false);
-  const [isInvoiceSaved, setIsInvoiceSaved] = useState(false); // ✅ Track if invoice is saved
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -47,133 +49,34 @@ export default function Invoice() {
   const tax = (subtotal * invoiceData.taxRate) / 100;
   const total = subtotal + tax;
 
-  
-const handleSubmit = async (e) => {
-  e.preventDefault();
-  setLoading(true);
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
 
-  try {
-    const response = await axios.post(
-      `${process.env.REACT_APP_API_BASE_URL}/invoices`,
-      {
-        ...invoiceData,
-        subtotal,
-        tax,
-        total,
-        status: "created",
-      }
-    );
-
-    console.log("Invoice saved:", response.data);
-    alert("Invoice saved successfully!");
-
-    if (response.data._id) {
-      setInvoiceData((prev) => ({ ...prev, id: response.data._id }));
-    }
-
-    setIsInvoiceSaved(true);
-  } catch (error) {
-    console.error("Error saving invoice:", error);
-    alert("Error saving invoice!");
-  } finally {
-    setLoading(false);
-  }
-};
-
-
- const handlePayment = async () => {
-  if (!invoiceData.clientName || !invoiceData.clientEmail || total === 0) {
-    alert("Please fill all client details and add items before payment");
-    return;
-  }
-
-  setLoading(true);
-
-  try {
-    // Step 1: Create order
-    const orderResponse = await axios.post(
-      `${process.env.REACT_APP_API_BASE_URL}/api/create-order`,
-      {
-        amount: total * 100,
-        currency: "INR",
-        invoiceNumber: invoiceData.invoiceNumber,
-        clientName: invoiceData.clientName,
-        clientEmail: invoiceData.clientEmail,
-        items: invoiceData.items,
-      }
-    );
-
-    const { order_id, razorpay_key } = orderResponse.data;
-
-    // Step 2: Initialize Razorpay checkout
-    const options = {
-      key: razorpay_key,
-      amount: total * 100,
-      currency: "INR",
-      name: "Your Company Name",
-      description: `Payment for Invoice ${invoiceData.invoiceNumber}`,
-      order_id: order_id,
-      handler: async function (response) {
-        try {
-          // Step 3: Verify payment
-          const verifyResponse = await axios.post(
-            `${process.env.REACT_APP_API_BASE_URL}/api/verify-payment`,
-            {
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_signature: response.razorpay_signature,
-              invoiceData: invoiceData,
-            }
-          );
-
-          if (verifyResponse.data.success) {
-            alert(
-              `Payment successful! Payment ID: ${response.razorpay_payment_id}`
-            );
-
-            // Update invoice status
-            await axios.put(
-              `${process.env.REACT_APP_API_BASE_URL}/api/invoices/${
-                invoiceData.id || invoiceData.invoiceNumber
-              }`,
-              {
-                status: "paid",
-                paymentId: response.razorpay_payment_id,
-              }
-            );
-
-            setInvoiceData((prev) => ({ ...prev, status: "paid" }));
-          } else {
-            alert("Payment verification failed!");
-          }
-        } catch (error) {
-          console.error("Payment verification error:", error);
-          alert("Payment verification error!");
+    try {
+      const response = await axios.post(
+        `http://localhost:5000/invoices`,
+        {
+          ...invoiceData,
+          subtotal,
+          tax,
+          total,
+          status: "created",
         }
-      },
-      prefill: {
-        name: invoiceData.clientName,
-        email: invoiceData.clientEmail,
-      },
-      theme: {
-        color: "#3399cc",
-      },
-      modal: {
-        ondismiss: function () {
-          setLoading(false);
-        },
-      },
-    };
+      );
 
-    const rzp = new window.Razorpay(options);
-    rzp.open();
-  } catch (error) {
-    console.error("Error in payment flow:", error);
-    alert("Error initiating payment!");
-  } finally {
-    setLoading(false);
-  }
-};
+      console.log("Invoice saved:", response.data);
+      alert("Invoice saved successfully!");
+
+      // ✅ Navigate to Home after successful save
+      navigate("/");
+    } catch (error) {
+      console.error("Error saving invoice:", error);
+      alert("Error saving invoice!");
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="invoice-page">
@@ -323,15 +226,6 @@ const handleSubmit = async (e) => {
           <div className="buttons-section">
             <button type="submit" className="submit-btn" disabled={loading}>
               {loading ? "Saving..." : "Save Invoice"}
-            </button>
-
-            <button
-              type="button"
-              onClick={handlePayment}
-              className="pay-button"
-              disabled={loading || total === 0 || !isInvoiceSaved} // ✅ only active after save
-            >
-              {loading ? "Processing..." : `Pay ₹${total.toFixed(2)}`}
             </button>
           </div>
         </form>

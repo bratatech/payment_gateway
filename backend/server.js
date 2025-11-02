@@ -74,6 +74,24 @@ app.post("/invoices", async (req, res) => {
   }
 });
 
+app.get("/api/invoices/:email", async (req, res) => {
+  try {
+    const { email } = req.params;
+    const result = await pool.query(
+      "SELECT * FROM invoices WHERE client_email = $1",
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "No invoices found" });
+    }
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("Error fetching invoices:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 app.post("/api/create-order", async (req, res) => {
   try {

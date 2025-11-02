@@ -36,11 +36,11 @@ function Home() {
             boxShadow: "0 4px 8px rgba(0,0,0,0.1)",
           }}
         >
-          View Invoice 💳
+          Create Invoice 💳
         </Link>
 
-        <Link
-          to="/"
+         <Link
+          to="/invoice-view"
           style={{
             backgroundColor: "#28a745",
             color: "white",
@@ -51,7 +51,7 @@ function Home() {
             boxShadow: "0 4px 8px rgba(0,0,0,0.1)",
           }}
         >
-          Dashboard 📊
+           Invoice View📊
         </Link>
       </div>
 

@@ -26,14 +26,21 @@ export default function ViewInvoice() {
         : [response.data]
       ).map((invoice) => ({
         ...invoice,
+        // Map DB snake_case to camelCase used by UI
+        invoiceNumber: invoice.invoiceNumber || invoice.invoice_number,
+        clientName: invoice.clientName || invoice.client_name,
+        clientEmail: invoice.clientEmail || invoice.client_email,
+        clientAddress: invoice.clientAddress || invoice.client_address,
+        taxRate: Number(invoice.taxRate ?? invoice.tax_rate),
+        // Parse items when stored as JSON string
         items:
           typeof invoice.items === "string"
             ? JSON.parse(invoice.items)
             : invoice.items,
+        // Ensure numeric types
         subtotal: Number(invoice.subtotal),
         tax: Number(invoice.tax),
         total: Number(invoice.total),
-        taxRate: Number(invoice.taxRate),
       }));
 
       setInvoices(normalizedData);
@@ -185,6 +192,14 @@ export default function ViewInvoice() {
       {!showModal && invoices.length > 0 && (
         <div className="invoice-container">
           <h1 className="invoice-title">📄 Your Invoices</h1>
+
+          {/* Client Summary */}
+          <div className="invoice-box" style={{ marginBottom: "1rem" }}>
+            <h3 style={{ marginTop: 0 }}>Client Summary</h3>
+            <p><strong>Name:</strong> {invoices[0].clientName}</p>
+            <p><strong>Email:</strong> {invoices[0].clientEmail}</p>
+            <p><strong>Address:</strong> {invoices[0].clientAddress}</p>
+          </div>
           {invoices.map((invoice, index) => (
             <div key={index} className="invoice-box">
               <h3>{invoice.invoiceNumber}</h3>

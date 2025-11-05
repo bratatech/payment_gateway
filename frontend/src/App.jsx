@@ -9,66 +9,28 @@ function App() {
   return (
     <Router>
       {/* ✅ Navbar */}
-      <nav
-        style={{
-          //background: "#1e1e1e",
-          padding: "1rem",
-          display: "flex",
-          gap: "1.5rem",
-          justifyContent: "center",
-          alignItems: "center",
-        }}
-      >
-        <Link
-          to="/"
-          style={{
-            color: "white",
-            textDecoration: "none",
-            fontSize: "1.1rem",
-            fontWeight: "500",
-          }}
-        >
-          🏠 Home
-        </Link>
-
-        <Link
-          to="/invoice"
-          style={{
-            color: "white",
-            textDecoration: "none",
-            fontSize: "1.1rem",
-            fontWeight: "500",
-          }}
-        >
-          💳 Invoice
-        </Link>
+      <nav className="navbar">
+        <div className="nav-inner">
+          <div className="brand">Payment Gateway</div>
+          <div className="nav-links">
+            <Link to="/" className="nav-link">🏠 Home</Link>
+            <Link to="/invoice" className="nav-link">💳 Invoice</Link>
+            <Link to="/invoice-view" className="nav-link">📄 View</Link>
+          </div>
+        </div>
       </nav>
 
       {/* ✅ Routes */}
-      <div style={{ padding: "2rem" }}>
+      <main className="content">
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/invoice" element={<Invoice />} />
           <Route path="/invoice-view" element={<ViewInvoice />} /> 
         </Routes>
-      </div>
+      </main>
 
       {/* ✅ Footer */}
-      <footer
-        style={{
-          textAlign: "center",
-          padding: "1rem",
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          background: "#f1f1f1",
-          marginTop: "2rem",
-          fontSize: "0.9rem",
-          color: "#333",
-        }}
-      >
-         {new Date().getFullYear()} 
-      </footer>
+      <footer className="footer">© {new Date().getFullYear()}</footer>
     </Router>
   )
 }

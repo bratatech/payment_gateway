@@ -1,17 +1,15 @@
-#root{
-    background-color: #007bff;
-}
 .invoice-page {
   min-height: 100vh; /* Make it take full screen height */
   width: 100%;       /* Cover full width */
-  background: linear-gradient(135deg, #89f7fe, #66a6ff); /* Nice blue gradient */
+  background: transparent; /* Use app-wide dark background */
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
 }  
 .invoice-container {
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--card, #0f1426);
+  color: var(--text, #e6eaff);
   backdrop-filter: blur(10px);
   box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
   border-radius: 1rem;
@@ -20,13 +18,14 @@
   max-width: 800px;
   font-family: "Poppins", sans-serif;
   margin: auto; /* Ensures centering in case of additional layout constraints */
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
 }
 
 .invoice-title {
   font-size: 2.5rem;
   font-weight: 800;
   text-align: center;
-  color: #333;
+  color: var(--text, #e6eaff);
   margin-bottom: 2rem;
 }
 
@@ -43,9 +42,9 @@
 .section-title {
   font-size: 1.5rem;
   font-weight: 600;
-  color: #444;
+  color: var(--text, #e6eaff);
   margin-bottom: 1rem;
-  border-bottom: 2px solid #ddd;
+  border-bottom: 2px solid var(--border, rgba(255,255,255,0.12));
   padding-bottom: 0.5rem;
 }
 
@@ -62,7 +61,7 @@
 .form-label {
   font-size: 1rem;
   font-weight: 500;
-  color: #555;
+  color: var(--muted, #9aa3b2);
   margin-bottom: 0.5rem;
 }
 
@@ -70,7 +69,9 @@
 .form-textarea {
   width: 100%;
   padding: 0.75rem;
-  border: 1px solid #ccc;
+  border: 1px solid var(--border, rgba(255,255,255,0.12));
+  background: rgba(255,255,255,0.04);
+  color: var(--text, #e6eaff);
   border-radius: 0.5rem;
   font-size: 1rem;
 }
@@ -123,13 +124,13 @@
 .totals-section {
   text-align: right;
   font-size: 1rem;
-  color: #333;
+  color: var(--text, #e6eaff);
 }
 
 .total-amount {
   font-size: 1.25rem;
   font-weight: 700;
-  color: #000;
+  color: var(--text, #ffffff);
 }
 
 .submit-section {
@@ -158,4 +159,100 @@
   border-radius: 0.5rem;
   font-size: 1rem;
   cursor: pointer;
+}
+
+/* Modal Styles for ViewInvoice */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 50;
+}
+.modal-container {
+  width: 100%;
+  max-width: 520px;
+  background: var(--card, #0f1426);
+  color: var(--text, #e6eaff);
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 1rem;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  padding: 1.5rem;
+  text-align: center;
+}
+.modal-form {
+  margin-top: 1rem;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+}
+.error-text {
+  color: #ff6b6b;
+  margin-top: 0.5rem;
+}
+
+/* Invoice box + table */
+.invoice-box {
+  margin: 1rem 0;
+  padding: 1rem;
+  background: var(--card, #0f1426);
+  color: var(--text, #e6eaff);
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 0.8rem;
+}
+.invoice-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.75rem;
+  font-size: 0.95rem;
+}
+.invoice-table th,
+.invoice-table td {
+  padding: 0.6rem 0.5rem;
+  border-bottom: 1px solid var(--border, rgba(255,255,255,0.08));
+  text-align: left;
+}
+.invoice-table thead th {
+  color: var(--muted, #9aa3b2);
+  font-weight: 600;
+}
+
+/* Action buttons improvements */
+.submit-btn,
+.add-item-btn {
+  border: 1px solid var(--border, rgba(255,255,255,0.08));
+  border-radius: 0.6rem;
+  transition: box-shadow 0.2s ease, transform 0.05s ease;
+}
+.add-item-btn {
+  background: linear-gradient(180deg, var(--primary, #6aa7ff), var(--primary-600, #3f8bff));
+}
+.submit-btn {
+  background: linear-gradient(180deg, #2bd687, #16ad68);
+}
+.submit-btn:hover,
+.add-item-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.35), 0 0 0 6px rgba(106, 167, 255, 0.25);
+}
+.remove-item-btn {
+  color: #ff6b6b;
+}
+
+/* Pay now button for ViewInvoice */
+.pay-now-btn {
+  margin-top: 0.75rem;
+  padding: 0.6rem 1rem;
+  border-radius: 0.6rem;
+  border: 1px solid transparent;
+  font-weight: 600;
+  cursor: pointer;
+  background: linear-gradient(180deg, #ffc857, #f9a825);
+  color: #1b1b1b;
+}
+.pay-now-btn:hover {
+  filter: brightness(1.05);
 }

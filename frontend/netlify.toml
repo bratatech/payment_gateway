@@ -1,0 +1,15 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Optional: speeds up local dev with Netlify CLI
+# [dev]
+#   command = "npm run dev"
+#   port = 5173
+#   publish = "dist"
+
+# SPA fallback to index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

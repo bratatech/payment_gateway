@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom"; // ✅ for navigation
 
 export default function Invoice() {
   const navigate = useNavigate();
+  const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
   const [invoiceData, setInvoiceData] = useState({
     invoiceNumber: "INV-" + new Date().getTime(),
@@ -55,7 +56,7 @@ export default function Invoice() {
 
     try {
       const response = await axios.post(
-        `http://localhost:5000/invoices`,
+        `${API_BASE}/invoices`,
         {
           ...invoiceData,
           subtotal,

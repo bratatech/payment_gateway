@@ -1,10 +1,9 @@
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
-import Razorpay from "razorpay";
+import axios from "axios";
 import pkg from "pg";
 import dotenv from "dotenv";
-
 
 dotenv.config();
 const { Pool } = pkg;
@@ -13,7 +12,7 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Postgres connection pool
+// --------------------- DATABASE CONNECTION ----------------------
 const pool = new Pool({
   user: process.env.DB_USER,
   host: process.env.DB_HOST,
@@ -22,14 +21,20 @@ const pool = new Pool({
   port: process.env.DB_PORT,
 });
 
-// Razorpay instance
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY,
-  key_secret: process.env.RAZORPAY_SECRET,
-});
+// --------------------- CASHFREE CONFIG ----------------------
+const CF_APP_ID = process.env.CASHFREE_APP_ID;
+const CF_SECRET = process.env.CASHFREE_SECRET;
+const CF_ENV = (process.env.CASHFREE_ENV || "sandbox").toLowerCase();
+
+const CF_BASE_URL =
+  process.env.CASHFREE_BASE_URL ||
+  (CF_ENV === "production"
+    ? "https://api.cashfree.com/pg"
+    : "https://sandbox.cashfree.com/pg");
 
 // --------------------- ROUTES ----------------------
 
+// Create new invoice
 app.post("/invoices", async (req, res) => {
   try {
     const {
@@ -38,6 +43,7 @@ app.post("/invoices", async (req, res) => {
       dueDate,
       clientName,
       clientEmail,
+      clientPhone,
       clientAddress,
       items,
       taxRate,
@@ -49,14 +55,16 @@ app.post("/invoices", async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO invoices 
-      (invoice_number, date, due_date, client_name, client_email, client_address, items, tax_rate, subtotal, tax, total, status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+        (invoice_number, date, due_date, client_name, client_email, client_phone, client_address, items, tax_rate, subtotal, tax, total, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       RETURNING *`,
       [
         invoiceNumber,
         date,
         dueDate,
         clientName,
         clientEmail,
+        clientPhone,
         clientAddress,
         JSON.stringify(items),
         taxRate,
@@ -74,6 +82,7 @@ app.post("/invoices", async (req, res) => {
   }
 });
 
+// Fetch all invoices for a specific client
 app.get("/api/invoices/:email", async (req, res) => {
   try {
     const { email } = req.params;
@@ -93,49 +102,119 @@ app.get("/api/invoices/:email", async (req, res) => {
   }
 });
 
+// Create a Cashfree payment order
 app.post("/api/create-order", async (req, res) => {
   try {
-    const { amount, currency, invoiceNumber } = req.body;
+    const { amount, currency, invoiceNumber, clientName, clientEmail, clientPhone } = req.body;
 
-    const options = {
-      amount,
-      currency,
-      receipt: invoiceNumber,
-      payment_capture: 1, 
+    // Convert to float to ensure proper formatting (in rupees)
+    const orderAmount = parseFloat(amount);
+
+    // Cashfree doesn't allow special characters in customer_id
+    const sanitizedCustomerId = (clientEmail || invoiceNumber)
+      .replace(/[^a-zA-Z0-9_-]/g, "_");
+
+    const createOrderBody = {
+      order_id: String(invoiceNumber),
+      order_amount: orderAmount,
+      order_currency: currency || "INR",
+      customer_details: {
+        customer_id: sanitizedCustomerId,
+        customer_email: clientEmail,
+        customer_name: clientName,
+        customer_phone: clientPhone || "9999999999", // ✅ fallback if not provided
+      },
+      order_meta: {
+        return_url: `${process.env.FRONTEND_URL || "http://localhost:5173"}/payment-success?order_id={order_id}`,
+      },
     };
 
-    const order = await razorpay.orders.create(options);
-    res.json({ order_id: order.id, razorpay_key: process.env.RAZORPAY_KEY });
+    const headers = {
+      "x-client-id": CF_APP_ID,
+      "x-client-secret": CF_SECRET,
+      "x-api-version": "2022-09-01",
+      "Content-Type": "application/json",
+    };
+
+    const cfResp = await axios.post(`${CF_BASE_URL}/orders`, createOrderBody, {
+      headers,
+    });
+
+    const data = cfResp.data;
+
+    // Optional: Log payment to DB
+    await pool.query(
+      `INSERT INTO payments (order_id, cf_order_id, amount, currency, customer_email, customer_phone, payment_session_id, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        data.order_id,
+        data.cf_order_id,
+        orderAmount,
+        currency || "INR",
+        clientEmail,
+        clientPhone || "9999999999",
+        data.payment_session_id,
+        "PENDING",
+      ]
+    );
+
+    res.json({
+      cf_order_id: data.cf_order_id,
+      order_id: data.order_id,
+      payment_session_id: data.payment_session_id,
+      env: CF_ENV,
+    });
   } catch (error) {
-    console.error("Error creating Razorpay order:", error);
-    res.status(500).json({ error: "Error creating order" });
+    console.error(
+      "Error creating Cashfree order:",
+      error?.response?.data || error.message
+    );
+    res.status(500).json({ error: "Error creating Cashfree order" });
   }
 });
 
+// Verify payment status from Cashfree
 app.post("/api/verify-payment", async (req, res) => {
   try {
-    const crypto = await import("crypto");
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+    const { order_id } = req.body;
 
-    const hmac = crypto.createHmac("sha256", process.env.RAZORPAY_SECRET);
-    hmac.update(razorpay_order_id + "|" + razorpay_payment_id);
-    const generated_signature = hmac.digest("hex");
+    const headers = {
+      "x-client-id": CF_APP_ID,
+      "x-client-secret": CF_SECRET,
+      "x-api-version": "2022-09-01",
+    };
 
-    if (generated_signature === razorpay_signature) {
-      res.json({ success: true });
-    } else {
-      res.json({ success: false });
-    }
+    const cfStatusResp = await axios.get(`${CF_BASE_URL}/orders/${order_id}`, {
+      headers,
+    });
+
+    const status = cfStatusResp?.data?.order_status;
+    const success = status === "PAID";
+
+    // Update payment and invoice status in DB
+    await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [
+      status,
+      order_id,
+    ]);
+    await pool.query(`UPDATE invoices SET status=$1 WHERE invoice_number=$2`, [
+      status,
+      order_id,
+    ]);
+
+    res.json({ success, status });
   } catch (error) {
-    console.error("Payment verification error:", error);
+    console.error(
+      "Payment verification error:",
+      error?.response?.data || error.message
+    );
     res.status(500).json({ error: "Payment verification failed" });
   }
 });
 
-
+// Update invoice after payment
 app.put("/api/invoices/:id", async (req, res) => {
   try {
-    const { id } = req.params; // this is actually the invoiceNumber coming from frontend
+    const { id } = req.params; // invoiceNumber
     const { status, paymentId } = req.body;
 
     const result = await pool.query(
@@ -150,7 +229,6 @@ app.put("/api/invoices/:id", async (req, res) => {
   }
 });
 
-// --------------------------------------------------
-
-const PORT = 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// --------------------- SERVER ----------------------
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

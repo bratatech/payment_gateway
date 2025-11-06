@@ -3,6 +3,7 @@ import axios from "axios";
 import "./invoice.css";
 
 export default function ViewInvoice() {
+  const API_BASE = import.meta.env.VITE_API_BASE_URL;
   const [email, setEmail] = useState("");
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -17,7 +18,7 @@ export default function ViewInvoice() {
 
     try {
       const response = await axios.get(
-        `http://localhost:5000/api/invoices/${email}`
+        `${API_BASE}/api/invoices/${email}`
       );
 
       // Normalize data: ensure items are parsed, and numeric values are numbers
@@ -57,7 +58,7 @@ export default function ViewInvoice() {
     }
   };
 
-  // 💳 Handle Razorpay Payment
+  // 💳 Handle Cashfree Payment
   const handlePayment = async (invoiceData) => {
     if (
       !invoiceData.clientName ||
@@ -71,9 +72,9 @@ export default function ViewInvoice() {
     setLoading(true);
 
     try {
-      // Step 1: Create order
+      // Step 1: Create order (Cashfree) - get payment_session_id
       const orderResponse = await axios.post(
-        `http://localhost:5000/api/create-order`,
+        `${API_BASE}/api/create-order`,
         {
           amount: invoiceData.total * 100,
           currency: "INR",
@@ -83,78 +84,60 @@ export default function ViewInvoice() {
           items: invoiceData.items,
         }
       );
+      const { payment_session_id, order_id, env } = orderResponse.data;
 
-      const { order_id, razorpay_key } = orderResponse.data;
+      if (!window.Cashfree) {
+        throw new Error("Cashfree SDK not loaded");
+      }
 
-      // Step 2: Initialize Razorpay checkout
-      const options = {
-        key: razorpay_key,
-        amount: invoiceData.total * 100,
-        currency: "INR",
-        name: "Your Company Name",
-        description: `Payment for Invoice ${invoiceData.invoiceNumber}`,
-        order_id: order_id,
-        handler: async function (response) {
-          try {
-            // Step 3: Verify payment
-            const verifyResponse = await axios.post(
-              `http://localhost:5000/api/verify-payment`,
-              {
-                razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_signature: response.razorpay_signature,
-                invoiceData: invoiceData,
-              }
-            );
+      // Step 2: Initialize Cashfree checkout (modal)
+      const cashfree = new window.Cashfree({
+        mode: env === "production" ? "production" : "sandbox",
+      });
 
-            if (verifyResponse.data.success) {
-              alert(
-                `Payment successful! Payment ID: ${response.razorpay_payment_id}`
-              );
+      const result = await cashfree.checkout({
+        paymentSessionId: payment_session_id,
+        redirectTarget: "_modal",
+      });
 
-              // Step 4: Update invoice status
-              await axios.put(
-                `http://localhost:5000/api/invoices/${
-                  invoiceData.id || invoiceData.invoiceNumber
-                }`,
-                {
-                  status: "paid",
-                  paymentId: response.razorpay_payment_id,
-                }
-              );
-
-              // Update UI instantly
-              setInvoices((prevInvoices) =>
-                prevInvoices.map((inv) =>
-                  inv.invoiceNumber === invoiceData.invoiceNumber
-                    ? { ...inv, status: "paid" }
-                    : inv
-                )
-              );
-            } else {
-              alert("Payment verification failed!");
-            }
-          } catch (error) {
-            console.error("Payment verification error:", error);
-            alert("Payment verification error!");
+      // result will have status; regardless, verify from backend
+      try {
+        const verifyResponse = await axios.post(
+          `${API_BASE}/api/verify-payment`,
+          {
+            order_id: order_id || String(invoiceData.invoiceNumber),
           }
-        },
-        prefill: {
-          name: invoiceData.clientName,
-          email: invoiceData.clientEmail,
-        },
-        theme: {
-          color: "#3399cc",
-        },
-        modal: {
-          ondismiss: function () {
-            setLoading(false);
-          },
-        },
-      };
+        );
 
-      const rzp = new window.Razorpay(options);
-      rzp.open();
+        if (verifyResponse.data.success) {
+          alert(`Payment successful!`);
+
+          // Step 3: Update invoice status
+          await axios.put(
+            `${API_BASE}/api/invoices/${
+              invoiceData.id || invoiceData.invoiceNumber
+            }`,
+            {
+              status: "paid",
+              paymentId: order_id,
+            }
+          );
+
+          // Update UI instantly
+          setInvoices((prevInvoices) =>
+            prevInvoices.map((inv) =>
+              inv.invoiceNumber === invoiceData.invoiceNumber
+                ? { ...inv, status: "paid" }
+                : inv
+            )
+          );
+        } else {
+          alert("Payment verification failed!");
+        }
+      } catch (error) {
+        console.error("Payment verification error:", error);
+        alert("Payment verification error!");
+      }
     } catch (error) {
       console.error("Error in payment flow:", error);
       alert("Error initiating payment!");

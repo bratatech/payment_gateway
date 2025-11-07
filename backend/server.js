@@ -50,7 +50,7 @@ const CF_BASE_URL =
 // --------------------- ROUTES ----------------------
 
 // Create new invoice
-app.post("/api/invoices", async (req, res) => {
+app.post("/invoices", async (req, res) => {
   try {
     const {
       invoiceNumber,

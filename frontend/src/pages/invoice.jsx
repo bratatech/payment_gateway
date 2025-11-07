@@ -13,6 +13,7 @@ export default function Invoice() {
     dueDate: "",
     clientName: "",
     clientEmail: "",
+    clientPhone: "",
     clientAddress: "",
     items: [{ description: "", quantity: 1, price: 0 }],
     taxRate: 18,
@@ -107,6 +108,18 @@ export default function Invoice() {
                   value={invoiceData.clientEmail}
                   onChange={handleChange}
                   className="form-input"
+                  required
+                />
+              </div>
+              <div>
+                <label className="form-label">Client Phone *</label>
+                <input
+                  type="tel"
+                  name="clientPhone"
+                  value={invoiceData.clientPhone}
+                  onChange={handleChange}
+                  className="form-input"
+                  placeholder="e.g. 9876543210"
                   required
                 />
               </div>

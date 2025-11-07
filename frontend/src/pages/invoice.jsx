@@ -57,7 +57,7 @@ export default function Invoice() {
 
     try {
       const response = await axios.post(
-        `${API_BASE}/invoices`,
+        `${API_BASE}/api/invoices`,
         {
           ...invoiceData,
           subtotal,

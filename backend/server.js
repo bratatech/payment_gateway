@@ -12,13 +12,15 @@ const { Pool } = pkg;
 const app = express();
 
 // --------------------- SECURITY ----------------------
+ 
+
 app.use(
   helmet.contentSecurityPolicy({
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      fontSrc: ["'self'", "https://payment-gateway-pzvg.onrender.com"],
+      fontSrc: ["'self'", "https://payment-gateway-pzvg.onrender.com", "data:"], // ✅ added data:
       connectSrc: ["'self'"],
       imgSrc: ["'self'", "data:"],
     },

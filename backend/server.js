@@ -4,21 +4,35 @@ import bodyParser from "body-parser";
 import axios from "axios";
 import pkg from "pg";
 import dotenv from "dotenv";
+import helmet from "helmet";
 
 dotenv.config();
 const { Pool } = pkg;
 
 const app = express();
-app.use(cors());
+
+// --------------------- SECURITY ----------------------
+app.use(
+  helmet.contentSecurityPolicy({
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      fontSrc: ["'self'", "https://payment-gateway-pzvg.onrender.com"],
+      connectSrc: ["'self'"],
+      imgSrc: ["'self'", "data:"],
+    },
+  })
+);
+
+// --------------------- MIDDLEWARE ----------------------
+app.use(cors()); // allow all origins
 app.use(bodyParser.json());
 
 // --------------------- DATABASE CONNECTION ----------------------
 const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASSWORD,
-  port: process.env.DB_PORT,
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
 });
 
 // --------------------- CASHFREE CONFIG ----------------------
@@ -27,15 +41,14 @@ const CF_SECRET = process.env.CASHFREE_SECRET;
 const CF_ENV = (process.env.CASHFREE_ENV || "sandbox").toLowerCase();
 
 const CF_BASE_URL =
-  process.env.CASHFREE_BASE_URL ||
-  (CF_ENV === "production"
+  CF_ENV === "production"
     ? "https://api.cashfree.com/pg"
-    : "https://sandbox.cashfree.com/pg");
+    : "https://sandbox.cashfree.com/pg";
 
 // --------------------- ROUTES ----------------------
 
 // Create new invoice
-app.post("/invoices", async (req, res) => {
+app.post("/api/invoices", async (req, res) => {
   try {
     const {
       invoiceNumber,
@@ -102,15 +115,31 @@ app.get("/api/invoices/:email", async (req, res) => {
   }
 });
 
+// Update invoice after payment
+app.put("/api/invoices/:id", async (req, res) => {
+  try {
+    const { id } = req.params; // invoiceNumber
+    const { status, paymentId } = req.body;
+
+    const result = await pool.query(
+      `UPDATE invoices SET status=$1, payment_id=$2 WHERE invoice_number=$3 RETURNING *`,
+      [status, paymentId, id]
+    );
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("Error updating invoice:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Create a Cashfree payment order
 app.post("/api/create-order", async (req, res) => {
   try {
     const { amount, currency, invoiceNumber, clientName, clientEmail, clientPhone } = req.body;
 
-    // Convert to float to ensure proper formatting (in rupees)
     const orderAmount = parseFloat(amount);
 
-    // Cashfree doesn't allow special characters in customer_id
     const sanitizedCustomerId = (clientEmail || invoiceNumber)
       .replace(/[^a-zA-Z0-9_-]/g, "_");
 
@@ -122,7 +151,7 @@ app.post("/api/create-order", async (req, res) => {
         customer_id: sanitizedCustomerId,
         customer_email: clientEmail,
         customer_name: clientName,
-        customer_phone: clientPhone || "9999999999", // ✅ fallback if not provided
+        customer_phone: clientPhone || "9999999999",
       },
       order_meta: {
         return_url: `${process.env.FRONTEND_URL || "http://localhost:5173"}/payment-success?order_id={order_id}`,
@@ -142,7 +171,6 @@ app.post("/api/create-order", async (req, res) => {
 
     const data = cfResp.data;
 
-    // Optional: Log payment to DB
     await pool.query(
       `INSERT INTO payments (order_id, cf_order_id, amount, currency, customer_email, customer_phone, payment_session_id, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
@@ -191,7 +219,6 @@ app.post("/api/verify-payment", async (req, res) => {
     const status = cfStatusResp?.data?.order_status;
     const success = status === "PAID";
 
-    // Update payment and invoice status in DB
     await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [
       status,
       order_id,
@@ -211,23 +238,8 @@ app.post("/api/verify-payment", async (req, res) => {
   }
 });
 
-// Update invoice after payment
-app.put("/api/invoices/:id", async (req, res) => {
-  try {
-    const { id } = req.params; // invoiceNumber
-    const { status, paymentId } = req.body;
-
-    const result = await pool.query(
-      `UPDATE invoices SET status=$1, payment_id=$2 WHERE invoice_number=$3 RETURNING *`,
-      [status, paymentId, id]
-    );
-
-    res.json(result.rows[0]);
-  } catch (error) {
-    console.error("Error updating invoice:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
+// --------------------- TEST ROUTE ----------------------
+app.get("/", (req, res) => res.send("Backend is running!"));
 
 // --------------------- SERVER ----------------------
 const PORT = process.env.PORT || 5000;

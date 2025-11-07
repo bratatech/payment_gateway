@@ -31,6 +31,7 @@ export default function ViewInvoice() {
         invoiceNumber: invoice.invoiceNumber || invoice.invoice_number,
         clientName: invoice.clientName || invoice.client_name,
         clientEmail: invoice.clientEmail || invoice.client_email,
+        clientPhone: invoice.clientPhone || invoice.client_phone,
         clientAddress: invoice.clientAddress || invoice.client_address,
         taxRate: Number(invoice.taxRate ?? invoice.tax_rate),
         // Parse items when stored as JSON string
@@ -181,6 +182,7 @@ export default function ViewInvoice() {
             <h3 style={{ marginTop: 0 }}>Client Summary</h3>
             <p><strong>Name:</strong> {invoices[0].clientName}</p>
             <p><strong>Email:</strong> {invoices[0].clientEmail}</p>
+            <p><strong>Phone:</strong> {invoices[0].clientPhone}</p>
             <p><strong>Address:</strong> {invoices[0].clientAddress}</p>
           </div>
           {invoices.map((invoice, index) => (
@@ -191,6 +193,9 @@ export default function ViewInvoice() {
               </p>
               <p>
                 <strong>Email:</strong> {invoice.clientEmail}
+              </p>
+              <p>
+                <strong>Phone:</strong> {invoice.clientPhone}
               </p>
               <p>
                 <strong>Address:</strong> {invoice.clientAddress}

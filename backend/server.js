@@ -149,10 +149,8 @@ app.post("/api/create-order", async (req, res) => {
 
     const orderAmount = parseFloat(amount);
 
-    // sanitize ID to avoid invalid chars
     const sanitizedCustomerId = (clientEmail || invoiceNumber).replace(/[^a-zA-Z0-9_-]/g, "_");
 
-    // ✅ Request body for Cashfree order
     const createOrderBody = {
       order_id: String(invoiceNumber),
       order_amount: orderAmount,
@@ -164,12 +162,10 @@ app.post("/api/create-order", async (req, res) => {
         customer_phone: clientPhone || "9999999999",
       },
       order_meta: {
-        // Must be HTTPS
         return_url: `${FRONTEND_URL}/payment-success?order_id={order_id}`,
       },
     };
 
-    // ✅ Headers for Cashfree API
     const headers = {
       "x-client-id": CF_APP_ID,
       "x-client-secret": CF_SECRET,
@@ -177,11 +173,10 @@ app.post("/api/create-order", async (req, res) => {
       "Content-Type": "application/json",
     };
 
-    // ✅ Send request to Cashfree
-    const cfResp = await axios.post(CF_BASE_URL, createOrderBody, { headers });
+    // ✅ FIXED: Add /orders endpoint
+    const cfResp = await axios.post(`${CF_BASE_URL}/orders`, createOrderBody, { headers });
     const data = cfResp.data;
 
-    // ✅ Save order in DB
     await pool.query(
       `INSERT INTO payments (order_id, cf_order_id, amount, currency, customer_email, customer_phone, payment_session_id, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,

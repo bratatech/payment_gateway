@@ -6,7 +6,10 @@ import pkg from "pg";
 import dotenv from "dotenv";
 import helmet from "helmet";
 
-dotenv.config();
+if (process.env.NODE_ENV !== "production") {
+  dotenv.config();
+}
+
 const { Pool } = pkg;
 
 const app = express();

@@ -152,7 +152,7 @@ app.post("/api/create-order", async (req, res) => {
     const sanitizedCustomerId = (clientEmail || invoiceNumber).replace(/[^a-zA-Z0-9_-]/g, "_");
 
     const createOrderBody = {
-      order_id: String(invoiceNumber),
+      order_id: `${invoiceNumber}-${Date.now()}`,
       order_amount: orderAmount,
       order_currency: currency || "INR",
       customer_details: {
@@ -223,10 +223,12 @@ app.post("/api/verify-payment", async (req, res) => {
       "x-api-version": "2022-09-01",
     };
 
-    const verifyResp = await axios.get(`${CF_BASE_URL}/${order_id}`, { headers });
+    // ✅ Correct Cashfree verification URL
+    const verifyResp = await axios.get(`${CF_BASE_URL}/orders/${order_id}`, { headers });
     const status = verifyResp?.data?.order_status;
     const success = status === "PAID";
 
+    // ✅ Update both tables accordingly
     await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [status, order_id]);
     await pool.query(`UPDATE invoices SET status=$1 WHERE invoice_number=$2`, [status, order_id]);
 

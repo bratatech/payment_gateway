@@ -137,44 +137,19 @@ app.put("/api/invoices/:id", async (req, res) => {
 
 // Create a Cashfree payment order
 app.post("/api/create-order", async (req, res) => {
+  console.log("📦 Received create-order request:", req.body);
+
   try {
-    const {
-      amount,
-      currency,
-      invoiceNumber,
-      clientName,
-      clientEmail,
-      clientPhone,
-    } = req.body;
-
-    console.log("🔹 Received order request:", {
-      amount,
-      currency,
-      invoiceNumber,
-      clientEmail,
-    });
-
-    // Debug environment setup
-    console.log("🔧 Cashfree Configuration:");
-    console.log({
-      CF_ENV,
-      CF_APP_ID: CF_APP_ID ? "✅ loaded" : "❌ missing",
-      CF_SECRET: CF_SECRET ? "✅ loaded" : "❌ missing",
-      CF_BASE_URL,
-      FRONTEND_URL,
-    });
+    const { amount, currency, invoiceNumber, clientName, clientEmail, clientPhone } = req.body;
 
     const orderAmount = parseFloat(amount);
 
-    // Sanitize customer ID (Cashfree restricts special chars)
-    const sanitizedCustomerId = (clientEmail || invoiceNumber || "guest").replace(
-      /[^a-zA-Z0-9_-]/g,
-      "_"
-    );
+    // sanitize ID to avoid invalid chars
+    const sanitizedCustomerId = (clientEmail || invoiceNumber).replace(/[^a-zA-Z0-9_-]/g, "_");
 
-    // Order payload to Cashfree
+    // ✅ Request body for Cashfree order
     const createOrderBody = {
-      order_id: String(invoiceNumber || Date.now()),
+      order_id: String(invoiceNumber),
       order_amount: orderAmount,
       order_currency: currency || "INR",
       customer_details: {
@@ -184,11 +159,12 @@ app.post("/api/create-order", async (req, res) => {
         customer_phone: clientPhone || "9999999999",
       },
       order_meta: {
+        // Must be HTTPS
         return_url: `${FRONTEND_URL}/payment-success?order_id={order_id}`,
       },
     };
 
-    // Cashfree headers
+    // ✅ Headers for Cashfree API
     const headers = {
       "x-client-id": CF_APP_ID,
       "x-client-secret": CF_SECRET,
@@ -196,21 +172,13 @@ app.post("/api/create-order", async (req, res) => {
       "Content-Type": "application/json",
     };
 
-    console.log("📦 Creating Cashfree Order with body:", createOrderBody);
-
-    // Make the API call to Cashfree
-    const cfResp = await axios.post(`${CF_BASE_URL}/orders`, createOrderBody, {
-      headers,
-    });
-
-    console.log("✅ Cashfree Response:", cfResp.data);
-
+    // ✅ Send request to Cashfree
+    const cfResp = await axios.post(CF_BASE_URL, createOrderBody, { headers });
     const data = cfResp.data;
 
-    // Save payment in DB
+    // ✅ Save order in DB
     await pool.query(
-      `INSERT INTO payments 
-        (order_id, cf_order_id, amount, currency, customer_email, customer_phone, payment_session_id, status)
+      `INSERT INTO payments (order_id, cf_order_id, amount, currency, customer_email, customer_phone, payment_session_id, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [
         data.order_id,
@@ -224,7 +192,8 @@ app.post("/api/create-order", async (req, res) => {
       ]
     );
 
-    // Send success response
+    console.log("✅ Cashfree order created successfully:", data);
+
     res.json({
       cf_order_id: data.cf_order_id,
       order_id: data.order_id,
@@ -234,17 +203,16 @@ app.post("/api/create-order", async (req, res) => {
   } catch (error) {
     console.error(
       "❌ Error creating Cashfree order:",
-      error.response?.data || error.message
+      error?.response?.data || error.message
     );
-
     res.status(500).json({
       error: "Error creating Cashfree order",
-      details: error.response?.data || error.message,
+      details: error?.response?.data || error.message,
     });
   }
 });
 
-// Verify payment status from Cashfree
+// ✅ Verify payment
 app.post("/api/verify-payment", async (req, res) => {
   try {
     const { order_id } = req.body;
@@ -255,31 +223,22 @@ app.post("/api/verify-payment", async (req, res) => {
       "x-api-version": "2022-09-01",
     };
 
-    const cfStatusResp = await axios.get(`${CF_BASE_URL}/orders/${order_id}`, {
-      headers,
-    });
-
-    const status = cfStatusResp?.data?.order_status;
+    const verifyResp = await axios.get(`${CF_BASE_URL}/${order_id}`, { headers });
+    const status = verifyResp?.data?.order_status;
     const success = status === "PAID";
 
-    await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [
-      status,
-      order_id,
-    ]);
-    await pool.query(`UPDATE invoices SET status=$1 WHERE invoice_number=$2`, [
-      status,
-      order_id,
-    ]);
+    await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [status, order_id]);
+    await pool.query(`UPDATE invoices SET status=$1 WHERE invoice_number=$2`, [status, order_id]);
+
+    console.log("💰 Payment verified:", order_id, status);
 
     res.json({ success, status });
   } catch (error) {
-    console.error(
-      "Payment verification error:",
-      error?.response?.data || error.message
-    );
+    console.error("❌ Payment verification error:", error?.response?.data || error.message);
     res.status(500).json({ error: "Payment verification failed" });
   }
 });
+
 
 // --------------------- TEST ROUTE ----------------------
 app.get("/", (req, res) => res.send("Backend is running!"));

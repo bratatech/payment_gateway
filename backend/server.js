@@ -42,6 +42,8 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+console.log("🧩 Connected DB URL:", process.env.DATABASE_URL);
+
 // --------------------- CASHFREE CONFIG ----------------------
 const CF_APP_ID = process.env.CASHFREE_APP_ID;
 const CF_SECRET = process.env.CASHFREE_SECRET;

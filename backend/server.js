@@ -10,6 +10,8 @@ if (process.env.NODE_ENV !== "production") {
   dotenv.config();
 }
 
+const FRONTEND_URL = process.env.FRONTEND_URL;
+
 const { Pool } = pkg;
 
 const app = express();

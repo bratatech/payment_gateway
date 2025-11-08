@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import axios from "axios";
+import { load } from "@cashfreepayments/cashfree-js";
 import "./invoice.css";
 
 export default function ViewInvoice() {
@@ -89,7 +90,6 @@ export default function ViewInvoice() {
       const { payment_session_id, order_id } = orderResponse.data;
 
       // Step 2: Initialize Cashfree checkout (modal)
-      const { load } = await import("@cashfreepayments/cashfree-js");
       const cashfree = await load({ mode: "production" });
 
       await cashfree.checkout({

@@ -3,7 +3,8 @@ import axios from "axios";
 import "./invoice.css";
 
 export default function ViewInvoice() {
-  const API_BASE = import.meta.env.VITE_API_BASE_URL;
+  const API_BASE = "https://payment-gateway-pzvg.onrender.com";
+  const FRONTEND_BASE = "https://invoice-pay.netlify.app";
   const [email, setEmail] = useState("");
   const [invoices, setInvoices] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -77,7 +78,7 @@ export default function ViewInvoice() {
       const orderResponse = await axios.post(
         `${API_BASE}/api/create-order`,
         {
-          amount: invoiceData.total * 100,
+          amount: invoiceData.total,
           currency: "INR",
           invoiceNumber: invoiceData.invoiceNumber,
           clientName: invoiceData.clientName,
@@ -85,20 +86,15 @@ export default function ViewInvoice() {
           items: invoiceData.items,
         }
       );
-      const { payment_session_id, order_id, env } = orderResponse.data;
-
-      if (!window.Cashfree) {
-        throw new Error("Cashfree SDK not loaded");
-      }
+      const { payment_session_id, order_id } = orderResponse.data;
 
       // Step 2: Initialize Cashfree checkout (modal)
-      const cashfree = new window.Cashfree({
-        mode: env === "production" ? "production" : "sandbox",
-      });
+      const { load } = await import("@cashfreepayments/cashfree-js");
+      const cashfree = await load({ mode: "production" });
 
-      const result = await cashfree.checkout({
+      await cashfree.checkout({
         paymentSessionId: payment_session_id,
-        redirectTarget: "_modal",
+        redirectTarget: "_self",
       });
 
       // result will have status; regardless, verify from backend
@@ -132,6 +128,7 @@ export default function ViewInvoice() {
                 : inv
             )
           );
+          window.location.assign(`${FRONTEND_BASE}/payment-success?order_id=${order_id}`);
         } else {
           alert("Payment verification failed!");
         }

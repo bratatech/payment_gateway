@@ -37,14 +37,16 @@ export default function ViewInvoice() {
         clientAddress: invoice.clientAddress || invoice.client_address,
         taxRate: Number(invoice.taxRate ?? invoice.tax_rate),
         // Parse items when stored as JSON string
-        items:
-          typeof invoice.items === "string"
-            ? JSON.parse(invoice.items)
-            : invoice.items,
+        items: (() => {
+          if (typeof invoice.items === "string") {
+            try { return JSON.parse(invoice.items); } catch { return []; }
+          }
+          return Array.isArray(invoice.items) ? invoice.items : [];
+        })(),
         // Ensure numeric types
-        subtotal: Number(invoice.subtotal),
-        tax: Number(invoice.tax),
-        total: Number(invoice.total),
+        subtotal: Number.isFinite(Number(invoice.subtotal)) ? Number(invoice.subtotal) : 0,
+        tax: Number.isFinite(Number(invoice.tax)) ? Number(invoice.tax) : 0,
+        total: Number.isFinite(Number(invoice.total)) ? Number(invoice.total) : 0,
       }));
 
       setInvoices(normalizedData);

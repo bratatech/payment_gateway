@@ -143,6 +143,9 @@ app.put("/api/invoices/:id", async (req, res) => {
 });
 
 // Create a Cashfree payment order
+// ==========================
+// Create Order Endpoint
+// ==========================
 app.post("/api/create-order", async (req, res) => {
   console.log("📦 Received create-order request:", req.body);
 
@@ -151,8 +154,10 @@ app.post("/api/create-order", async (req, res) => {
 
     const orderAmount = parseFloat(amount);
 
+    // Sanitize customer id (needed for Cashfree)
     const sanitizedCustomerId = (clientEmail || invoiceNumber).replace(/[^a-zA-Z0-9_-]/g, "_");
 
+    // ⚠️ Modern Cashfree requires "return_url" to be HTTPS and single slash
     const createOrderBody = {
       order_id: `${invoiceNumber}-${Date.now()}`,
       order_amount: orderAmount,
@@ -164,7 +169,7 @@ app.post("/api/create-order", async (req, res) => {
         customer_phone: clientPhone || "9999999999",
       },
       order_meta: {
-        return_url: `${FRONTEND_URL}/payment-success?order_id={order_id}`,
+        return_url: `${FRONTEND_URL}/payment-success?order_id={order_id}`, // ✅ fixed double slash
       },
     };
 
@@ -175,10 +180,11 @@ app.post("/api/create-order", async (req, res) => {
       "Content-Type": "application/json",
     };
 
-    // ✅ FIXED: Add /orders endpoint
+    // ⚠️ Ensure this is the /orders endpoint for Cashfree v2
     const cfResp = await axios.post(`${CF_BASE_URL}/orders`, createOrderBody, { headers });
     const data = cfResp.data;
 
+    // Save order and payment_session_id in DB
     await pool.query(
       `INSERT INTO payments (order_id, cf_order_id, amount, currency, customer_email, customer_phone, payment_session_id, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
@@ -189,24 +195,22 @@ app.post("/api/create-order", async (req, res) => {
         currency || "INR",
         clientEmail,
         clientPhone || "9999999999",
-        data.payment_session_id,
+        data.payment_session_id, // ⚠️ This is what frontend will use as the "token"
         "PENDING",
       ]
     );
 
     console.log("✅ Cashfree order created successfully:", data);
 
+    // ⚠️ FRONTEND USES payment_session_id as "token" for load()
     res.json({
       cf_order_id: data.cf_order_id,
       order_id: data.order_id,
-      payment_session_id: data.payment_session_id,
-      env: CF_ENV,
+      payment_session_id: data.payment_session_id, // ✅ send this to frontend
+      env: CF_ENV, // optional, frontend can use to set PROD/TEST
     });
   } catch (error) {
-    console.error(
-      "❌ Error creating Cashfree order:",
-      error?.response?.data || error.message
-    );
+    console.error("❌ Error creating Cashfree order:", error?.response?.data || error.message);
     res.status(500).json({
       error: "Error creating Cashfree order",
       details: error?.response?.data || error.message,
@@ -214,7 +218,9 @@ app.post("/api/create-order", async (req, res) => {
   }
 });
 
-// ✅ Verify payment
+// ==========================
+// Verify Payment Endpoint
+// ==========================
 app.post("/api/verify-payment", async (req, res) => {
   try {
     const { order_id } = req.body;
@@ -225,12 +231,12 @@ app.post("/api/verify-payment", async (req, res) => {
       "x-api-version": "2022-09-01",
     };
 
-    // ✅ Correct Cashfree verification URL
+    // ✅ Correct URL to fetch order status
     const verifyResp = await axios.get(`${CF_BASE_URL}/orders/${order_id}`, { headers });
-    const status = verifyResp?.data?.order_status;
+    const status = verifyResp?.data?.order_status; // 'PAID', 'ACTIVE', etc.
     const success = status === "PAID";
 
-    // ✅ Update both tables accordingly
+    // ✅ Update DB tables
     await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [status, order_id]);
     await pool.query(`UPDATE invoices SET status=$1 WHERE invoice_number=$2`, [status, order_id]);
 

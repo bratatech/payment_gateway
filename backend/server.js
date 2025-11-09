@@ -176,7 +176,7 @@ app.post("/api/create-order", async (req, res) => {
         customer_phone: clientPhone || "9999999999",
       },
       order_meta: {
-        return_url: `${FRONTEND_URL}/payment-success?order_id={order_id}`, // ✅ fixed double slash
+        return_url: `${FRONTEND_URL}payment-success?order_id={order_id}`, // ✅ fixed double slash
       },
     };
 

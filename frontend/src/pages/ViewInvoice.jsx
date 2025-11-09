@@ -81,7 +81,7 @@ const handlePayment = async (invoiceData) => {
     if (!payment_session_id) throw new Error("Missing payment session ID from backend");
 
     // Step 2: Initialize Cashfree checkout (correct usage)
-    const cashfree = await load({ env: "PROD" }); // Don't pass token here
+    const cashfree = await load({ mode: "production" }); // Don't pass token here
 
     await cashfree.checkout({
       paymentSessionId: payment_session_id, // ← this is the actual session token

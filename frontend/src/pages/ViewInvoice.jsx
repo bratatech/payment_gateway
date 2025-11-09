@@ -19,45 +19,37 @@ export default function ViewInvoice() {
     setError("");
 
     try {
-      const response = await axios.get(
-        `${API_BASE}/api/invoices/${email}`
+      const response = await axios.get(`${API_BASE}/api/invoices/${email}`);
+      const normalizedData = (Array.isArray(response.data) ? response.data : [response.data]).map(
+        (invoice) => ({
+          ...invoice,
+          invoiceNumber: invoice.invoiceNumber || invoice.invoice_number,
+          clientName: invoice.clientName || invoice.client_name,
+          clientEmail: invoice.clientEmail || invoice.client_email,
+          clientPhone: invoice.clientPhone || invoice.client_phone,
+          clientAddress: invoice.clientAddress || invoice.client_address,
+          taxRate: Number(invoice.taxRate ?? invoice.tax_rate),
+          items: (() => {
+            if (typeof invoice.items === "string") {
+              try {
+                return JSON.parse(invoice.items);
+              } catch {
+                return [];
+              }
+            }
+            return Array.isArray(invoice.items) ? invoice.items : [];
+          })(),
+          subtotal: Number(invoice.subtotal) || 0,
+          tax: Number(invoice.tax) || 0,
+          total: Number(invoice.total) || 0,
+        })
       );
-
-      // Normalize data: ensure items are parsed, and numeric values are numbers
-      const normalizedData = (Array.isArray(response.data)
-        ? response.data
-        : [response.data]
-      ).map((invoice) => ({
-        ...invoice,
-        // Map DB snake_case to camelCase used by UI
-        invoiceNumber: invoice.invoiceNumber || invoice.invoice_number,
-        clientName: invoice.clientName || invoice.client_name,
-        clientEmail: invoice.clientEmail || invoice.client_email,
-        clientPhone: invoice.clientPhone || invoice.client_phone,
-        clientAddress: invoice.clientAddress || invoice.client_address,
-        taxRate: Number(invoice.taxRate ?? invoice.tax_rate),
-        // Parse items when stored as JSON string
-        items: (() => {
-          if (typeof invoice.items === "string") {
-            try { return JSON.parse(invoice.items); } catch { return []; }
-          }
-          return Array.isArray(invoice.items) ? invoice.items : [];
-        })(),
-        // Ensure numeric types
-        subtotal: Number.isFinite(Number(invoice.subtotal)) ? Number(invoice.subtotal) : 0,
-        tax: Number.isFinite(Number(invoice.tax)) ? Number(invoice.tax) : 0,
-        total: Number.isFinite(Number(invoice.total)) ? Number(invoice.total) : 0,
-      }));
 
       setInvoices(normalizedData);
       setShowModal(false);
-    } catch (error) {
-      console.error("Error fetching invoices:", error);
-      if (error.response?.status === 404) {
-        setError("No invoices found for this email.");
-      } else {
-        setError("Something went wrong! Please try again.");
-      }
+    } catch (err) {
+      console.error("Error fetching invoices:", err);
+      setError(err.response?.status === 404 ? "No invoices found for this email." : "Something went wrong!");
     } finally {
       setLoading(false);
     }
@@ -65,11 +57,7 @@ export default function ViewInvoice() {
 
   // 💳 Handle Cashfree Payment
   const handlePayment = async (invoiceData) => {
-    if (
-      !invoiceData.clientName ||
-      !invoiceData.clientEmail ||
-      invoiceData.total === 0
-    ) {
+    if (!invoiceData.clientName || !invoiceData.clientEmail || invoiceData.total === 0) {
       alert("Client details missing or invalid invoice total.");
       return;
     }
@@ -77,69 +65,59 @@ export default function ViewInvoice() {
     setLoading(true);
 
     try {
-      // Step 1: Create order (Cashfree) - get payment_session_id
-      const orderResponse = await axios.post(
-        `${API_BASE}/api/create-order`,
-        {
-          amount: invoiceData.total,
-          currency: "INR",
-          invoiceNumber: invoiceData.invoiceNumber,
-          clientName: invoiceData.clientName,
-          clientEmail: invoiceData.clientEmail,
-          items: invoiceData.items,
-        }
-      );
-      const { payment_session_id, order_id } = orderResponse.data;
+      // Step 1: Create order on backend
+      const orderResponse = await axios.post(`${API_BASE}/api/create-order`, {
+        amount: invoiceData.total,
+        currency: "INR",
+        invoiceNumber: invoiceData.invoiceNumber,
+        clientName: invoiceData.clientName,
+        clientEmail: invoiceData.clientEmail,
+        items: invoiceData.items,
+      });
+      const { order_id } = orderResponse.data;
 
-      // Step 2: Initialize Cashfree checkout (modal)
-      const cashfree = await load({ mode: "production" });
+      // Step 2: Get Cashfree token from backend
+      const tokenResponse = await axios.get(`${API_BASE}/api/cf-token?order_id=${order_id}`);
+      const { token } = tokenResponse.data;
+
+      if (!token) throw new Error("Failed to get Cashfree token");
+
+      // Step 3: Initialize Cashfree checkout
+      const cashfree = await load({
+        env: "PROD", // or "TEST" for sandbox
+        token,
+      });
 
       await cashfree.checkout({
-        paymentSessionId: payment_session_id,
+        paymentSessionId: orderResponse.data.payment_session_id,
         redirectTarget: "_self",
       });
 
-      // result will have status; regardless, verify from backend
-      try {
-        const verifyResponse = await axios.post(
-          `${API_BASE}/api/verify-payment`,
-          {
-            order_id: order_id || String(invoiceData.invoiceNumber),
-          }
+      // Step 4: After redirect, verify payment from backend
+      const verifyResponse = await axios.post(`${API_BASE}/api/verify-payment`, {
+        order_id: order_id,
+      });
+
+      if (verifyResponse.data.success) {
+        alert("Payment successful!");
+
+        // Update invoice status on backend
+        await axios.put(`${API_BASE}/api/invoices/${invoiceData.id || invoiceData.invoiceNumber}`, {
+          status: "paid",
+          paymentId: order_id,
+        });
+
+        // Update UI instantly
+        setInvoices((prev) =>
+          prev.map((inv) => (inv.invoiceNumber === invoiceData.invoiceNumber ? { ...inv, status: "paid" } : inv))
         );
 
-        if (verifyResponse.data.success) {
-          alert(`Payment successful!`);
-
-          // Step 3: Update invoice status
-          await axios.put(
-            `${API_BASE}/api/invoices/${
-              invoiceData.id || invoiceData.invoiceNumber
-            }`,
-            {
-              status: "paid",
-              paymentId: order_id,
-            }
-          );
-
-          // Update UI instantly
-          setInvoices((prevInvoices) =>
-            prevInvoices.map((inv) =>
-              inv.invoiceNumber === invoiceData.invoiceNumber
-                ? { ...inv, status: "paid" }
-                : inv
-            )
-          );
-          window.location.assign(`${FRONTEND_BASE}/payment-success?order_id=${order_id}`);
-        } else {
-          alert("Payment verification failed!");
-        }
-      } catch (error) {
-        console.error("Payment verification error:", error);
-        alert("Payment verification error!");
+        window.location.assign(`${FRONTEND_BASE}/payment-success?order_id=${order_id}`);
+      } else {
+        alert("Payment verification failed!");
       }
-    } catch (error) {
-      console.error("Error in payment flow:", error);
+    } catch (err) {
+      console.error("Error in payment flow:", err);
       alert("Error initiating payment!");
     } finally {
       setLoading(false);
@@ -179,11 +157,20 @@ export default function ViewInvoice() {
           {/* Client Summary */}
           <div className="invoice-box" style={{ marginBottom: "1rem" }}>
             <h3 style={{ marginTop: 0 }}>Client Summary</h3>
-            <p><strong>Name:</strong> {invoices[0].clientName}</p>
-            <p><strong>Email:</strong> {invoices[0].clientEmail}</p>
-            <p><strong>Phone:</strong> {invoices[0].clientPhone}</p>
-            <p><strong>Address:</strong> {invoices[0].clientAddress}</p>
+            <p>
+              <strong>Name:</strong> {invoices[0].clientName}
+            </p>
+            <p>
+              <strong>Email:</strong> {invoices[0].clientEmail}
+            </p>
+            <p>
+              <strong>Phone:</strong> {invoices[0].clientPhone}
+            </p>
+            <p>
+              <strong>Address:</strong> {invoices[0].clientAddress}
+            </p>
           </div>
+
           {invoices.map((invoice, index) => (
             <div key={index} className="invoice-box">
               <h3>{invoice.invoiceNumber}</h3>
@@ -233,9 +220,7 @@ export default function ViewInvoice() {
               <div className="totals-section">
                 <p>Subtotal: ₹{invoice.subtotal.toFixed(2)}</p>
                 <p>Tax ({invoice.taxRate}%): ₹{invoice.tax.toFixed(2)}</p>
-                <p className="total-amount">
-                  Total: ₹{invoice.total.toFixed(2)}
-                </p>
+                <p className="total-amount">Total: ₹{invoice.total.toFixed(2)}</p>
               </div>
 
               {/* 💳 Pay Now Button */}

@@ -57,72 +57,79 @@ export default function ViewInvoice() {
 
   // 💳 Handle Cashfree Payment
   const handlePayment = async (invoiceData) => {
-    if (!invoiceData.clientName || !invoiceData.clientEmail || invoiceData.total === 0) {
-      alert("Client details missing or invalid invoice total.");
-      return;
+  if (!invoiceData.clientName || !invoiceData.clientEmail || invoiceData.total === 0) {
+    alert("Client details missing or invalid invoice total.");
+    return;
+  }
+
+  setLoading(true);
+
+  try {
+    // -----------------------------
+    // Step 1: Create order on backend
+    // Backend returns order_id and payment_session_id (used as token)
+    // -----------------------------
+    const orderResponse = await axios.post(`${API_BASE}/api/create-order`, {
+      amount: invoiceData.total,
+      currency: "INR",
+      invoiceNumber: invoiceData.invoiceNumber,
+      clientName: invoiceData.clientName,
+      clientEmail: invoiceData.clientEmail,
+      clientPhone: invoiceData.clientPhone || "9999999999",
+      items: invoiceData.items,
+    });
+
+    const { order_id, payment_session_id } = orderResponse.data;
+
+    if (!payment_session_id) throw new Error("Failed to get Cashfree payment_session_id");
+
+    // -----------------------------
+    // Step 2: Initialize Cashfree checkout
+    // -----------------------------
+    const cashfree = await load({
+      env: "PROD", // use "TEST" if sandbox
+      token: payment_session_id, // use the session_id returned from backend
+    });
+
+    await cashfree.checkout({
+      paymentSessionId: payment_session_id,
+      redirectTarget: "_self",
+    });
+
+    // -----------------------------
+    // Step 3: After redirect, verify payment from backend
+    // -----------------------------
+    const verifyResponse = await axios.post(`${API_BASE}/api/verify-payment`, {
+      order_id,
+    });
+
+    if (verifyResponse.data.success) {
+      alert("Payment successful!");
+
+      // Update invoice status on backend
+      await axios.put(`${API_BASE}/api/invoices/${invoiceData.id || invoiceData.invoiceNumber}`, {
+        status: "paid",
+        paymentId: order_id,
+      });
+
+      // Update UI instantly
+      setInvoices((prev) =>
+        prev.map((inv) => (inv.invoiceNumber === invoiceData.invoiceNumber ? { ...inv, status: "paid" } : inv))
+      );
+
+      // Redirect to frontend success page
+      window.location.assign(`${FRONTEND_BASE}/payment-success?order_id=${order_id}`);
+    } else {
+      alert("Payment verification failed!");
     }
+  } catch (err) {
+    console.error("Error in payment flow:", err);
+    alert("Error initiating payment!");
+  } finally {
+    setLoading(false);
+  }
+};
 
-    setLoading(true);
-
-    try {
-      // Step 1: Create order on backend
-      const orderResponse = await axios.post(`${API_BASE}/api/create-order`, {
-        amount: invoiceData.total,
-        currency: "INR",
-        invoiceNumber: invoiceData.invoiceNumber,
-        clientName: invoiceData.clientName,
-        clientEmail: invoiceData.clientEmail,
-        items: invoiceData.items,
-      });
-      const { order_id } = orderResponse.data;
-
-      // Step 2: Get Cashfree token from backend
-      const tokenResponse = await axios.get(`${API_BASE}/api/cf-token?order_id=${order_id}`);
-      const { token } = tokenResponse.data;
-
-      if (!token) throw new Error("Failed to get Cashfree token");
-
-      // Step 3: Initialize Cashfree checkout
-      const cashfree = await load({
-        env: "PROD", // or "TEST" for sandbox
-        token,
-      });
-
-      await cashfree.checkout({
-        paymentSessionId: orderResponse.data.payment_session_id,
-        redirectTarget: "_self",
-      });
-
-      // Step 4: After redirect, verify payment from backend
-      const verifyResponse = await axios.post(`${API_BASE}/api/verify-payment`, {
-        order_id: order_id,
-      });
-
-      if (verifyResponse.data.success) {
-        alert("Payment successful!");
-
-        // Update invoice status on backend
-        await axios.put(`${API_BASE}/api/invoices/${invoiceData.id || invoiceData.invoiceNumber}`, {
-          status: "paid",
-          paymentId: order_id,
-        });
-
-        // Update UI instantly
-        setInvoices((prev) =>
-          prev.map((inv) => (inv.invoiceNumber === invoiceData.invoiceNumber ? { ...inv, status: "paid" } : inv))
-        );
-
-        window.location.assign(`${FRONTEND_BASE}/payment-success?order_id=${order_id}`);
-      } else {
-        alert("Payment verification failed!");
-      }
-    } catch (err) {
-      console.error("Error in payment flow:", err);
-      alert("Error initiating payment!");
-    } finally {
-      setLoading(false);
-    }
-  };
 
   return (
     <div className="invoice-page">

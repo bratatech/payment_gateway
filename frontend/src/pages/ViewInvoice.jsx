@@ -56,8 +56,8 @@ export default function ViewInvoice() {
   };
 
   // 💳 Handle Cashfree Payment
-  const handlePayment = async (invoiceData) => {
-  if (!invoiceData.clientName || !invoiceData.clientEmail || invoiceData.total === 0) {
+const handlePayment = async (invoiceData) => {
+  if (!invoiceData.clientName || !invoiceData.clientEmail || invoiceData.total <= 0) {
     alert("Client details missing or invalid invoice total.");
     return;
   }
@@ -65,10 +65,7 @@ export default function ViewInvoice() {
   setLoading(true);
 
   try {
-    // -----------------------------
     // Step 1: Create order on backend
-    // Backend returns order_id and payment_session_id (used as token)
-    // -----------------------------
     const orderResponse = await axios.post(`${API_BASE}/api/create-order`, {
       amount: invoiceData.total,
       currency: "INR",
@@ -81,43 +78,37 @@ export default function ViewInvoice() {
 
     const { order_id, payment_session_id } = orderResponse.data;
 
-    if (!payment_session_id) throw new Error("Failed to get Cashfree payment_session_id");
+    if (!payment_session_id) throw new Error("Missing payment session ID from backend");
 
-    // -----------------------------
-    // Step 2: Initialize Cashfree checkout
-    // -----------------------------
-    const cashfree = await load({
-      env: "PROD", // use "TEST" if sandbox
-      token: payment_session_id, // use the session_id returned from backend
-    });
+    // Step 2: Initialize Cashfree checkout (correct usage)
+    const cashfree = await load({ env: "PROD" }); // Don't pass token here
 
     await cashfree.checkout({
-      paymentSessionId: payment_session_id,
+      paymentSessionId: payment_session_id, // ← this is the actual session token
       redirectTarget: "_self",
     });
 
-    // -----------------------------
-    // Step 3: After redirect, verify payment from backend
-    // -----------------------------
-    const verifyResponse = await axios.post(`${API_BASE}/api/verify-payment`, {
-      order_id,
-    });
+    // Step 3: Verify payment after redirection
+    const verifyResponse = await axios.post(`${API_BASE}/api/verify-payment`, { order_id });
 
     if (verifyResponse.data.success) {
       alert("Payment successful!");
 
-      // Update invoice status on backend
+      // Step 4: Update invoice status
       await axios.put(`${API_BASE}/api/invoices/${invoiceData.id || invoiceData.invoiceNumber}`, {
         status: "paid",
         paymentId: order_id,
       });
 
-      // Update UI instantly
+      // Step 5: Update UI instantly
       setInvoices((prev) =>
-        prev.map((inv) => (inv.invoiceNumber === invoiceData.invoiceNumber ? { ...inv, status: "paid" } : inv))
+        prev.map((inv) =>
+          inv.invoiceNumber === invoiceData.invoiceNumber
+            ? { ...inv, status: "paid" }
+            : inv
+        )
       );
 
-      // Redirect to frontend success page
       window.location.assign(`${FRONTEND_BASE}/payment-success?order_id=${order_id}`);
     } else {
       alert("Payment verification failed!");
@@ -129,7 +120,6 @@ export default function ViewInvoice() {
     setLoading(false);
   }
 };
-
 
   return (
     <div className="invoice-page">

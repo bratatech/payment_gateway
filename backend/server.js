@@ -33,7 +33,14 @@ app.use(
 );
 
 // --------------------- MIDDLEWARE ----------------------
-app.use(cors()); // allow all origins
+app.use(
+  cors({
+    origin: "https://invoice-pay.netlify.app", // allow your frontend only
+    methods: ["GET", "POST", "PUT", "OPTIONS"],
+    credentials: true, // optional if using cookies
+  })
+);
+
 app.use(bodyParser.json());
 
 // --------------------- DATABASE CONNECTION ----------------------

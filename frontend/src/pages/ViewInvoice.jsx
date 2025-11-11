@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import axios from "axios";
 import { load } from "@cashfreepayments/cashfree-js";
+import { useLocation } from "react-router-dom";
 import "./invoice.css";
 
 export default function ViewInvoice() {
@@ -11,15 +12,14 @@ export default function ViewInvoice() {
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(true);
   const [error, setError] = useState("");
+  const location = useLocation();
 
   // Fetch invoice by email
-  const handleFetchInvoices = async (e) => {
-    e.preventDefault();
+  const fetchInvoicesByEmail = async (targetEmail) => {
     setLoading(true);
     setError("");
-
     try {
-      const response = await axios.get(`${API_BASE}/api/invoices/${email}`);
+      const response = await axios.get(`${API_BASE}/api/invoices/${encodeURIComponent(targetEmail)}`);
       const normalizedData = (Array.isArray(response.data) ? response.data : [response.data]).map(
         (invoice) => ({
           ...invoice,
@@ -54,6 +54,22 @@ export default function ViewInvoice() {
       setLoading(false);
     }
   };
+
+  const handleFetchInvoices = async (e) => {
+    e.preventDefault();
+    fetchInvoicesByEmail(email);
+  };
+
+  // Auto-fetch when ?email= is present in the URL
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const urlEmail = params.get("email");
+    if (urlEmail) {
+      setEmail(urlEmail);
+      fetchInvoicesByEmail(urlEmail);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search]);
 
   // 💳 Handle Cashfree Payment
 const handlePayment = async (invoiceData) => {

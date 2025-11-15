@@ -42,7 +42,8 @@ app.use(
 // --------------------- MIDDLEWARE ----------------------
 app.use(
   cors({
-    origin: FRONTEND_URL, // allow your frontend only (set via env)
+    origin: FRONTEND_URL.replace(/\/$/, "")
+, // allow your frontend only (set via env)
     methods: ["GET", "POST", "PUT", "OPTIONS"],
     credentials: true,
   })

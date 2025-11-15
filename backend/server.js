@@ -1,3 +1,4 @@
+// server.mjs
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
@@ -5,19 +6,25 @@ import axios from "axios";
 import pkg from "pg";
 import dotenv from "dotenv";
 import helmet from "helmet";
+import crypto from "crypto";
 
 if (process.env.NODE_ENV !== "production") {
   dotenv.config();
 }
 
-const FRONTEND_URL = process.env.FRONTEND_URL;
-
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://invoice-pay.netlify.app";
 const { Pool } = pkg;
 
 const app = express();
 
 // --------------------- SECURITY ----------------------
- 
+// Add Cashfree domains to connectSrc so SDK/XHR can work
+const CSP_CONNECT_SRC = [
+  "'self'",
+  "https://sandbox.cashfree.com",
+  "https://api.cashfree.com",
+  FRONTEND_URL,
+];
 
 app.use(
   helmet.contentSecurityPolicy({
@@ -25,8 +32,8 @@ app.use(
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      fontSrc: ["'self'", "https://payment-gateway-pzvg.onrender.com", "data:"], // ✅ added data:
-      connectSrc: ["'self'"],
+      fontSrc: ["'self'", "https://payment-gateway-pzvg.onrender.com", "data:"],
+      connectSrc: CSP_CONNECT_SRC,
       imgSrc: ["'self'", "data:"],
     },
   })
@@ -35,12 +42,16 @@ app.use(
 // --------------------- MIDDLEWARE ----------------------
 app.use(
   cors({
-    origin: "https://invoice-pay.netlify.app", // allow your frontend only
+    origin: FRONTEND_URL, // allow your frontend only (set via env)
     methods: ["GET", "POST", "PUT", "OPTIONS"],
-    credentials: true, // optional if using cookies
+    credentials: true,
   })
 );
 
+// Use raw body for Cashfree webhook to verify signature BEFORE json parsing
+app.use("/api/webhook/cashfree", express.raw({ type: "application/json" }));
+
+// JSON parser for all other routes
 app.use(bodyParser.json());
 
 // --------------------- DATABASE CONNECTION ----------------------
@@ -55,6 +66,7 @@ console.log("🧩 Connected DB URL:", process.env.DATABASE_URL);
 const CF_APP_ID = process.env.CASHFREE_APP_ID;
 const CF_SECRET = process.env.CASHFREE_SECRET;
 const CF_ENV = (process.env.CASHFREE_ENV || "sandbox").toLowerCase();
+const CF_WEBHOOK_SECRET = process.env.CASHFREE_WEBHOOK_SECRET;
 
 const CF_BASE_URL =
   CF_ENV === "production"
@@ -83,8 +95,8 @@ app.post("/api/invoices", async (req, res) => {
     } = req.body;
 
     const result = await pool.query(
-      `INSERT INTO invoices 
-        (invoice_number, date, due_date, client_name, client_email, client_phone, client_address, items, tax_rate, subtotal, tax, total, status)
+      `INSERT INTO invoices
+         (invoice_number, date, due_date, client_name, client_email, client_phone, client_address, items, tax_rate, subtotal, tax, total, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        RETURNING *`,
       [
@@ -115,10 +127,7 @@ app.post("/api/invoices", async (req, res) => {
 app.get("/api/invoices/:email", async (req, res) => {
   try {
     const { email } = req.params;
-    const result = await pool.query(
-      "SELECT * FROM invoices WHERE client_email = $1",
-      [email]
-    );
+    const result = await pool.query("SELECT * FROM invoices WHERE client_email = $1", [email]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ message: "No invoices found" });
@@ -131,7 +140,7 @@ app.get("/api/invoices/:email", async (req, res) => {
   }
 });
 
-// Update invoice after payment
+// Update invoice after payment (manual update route kept)
 app.put("/api/invoices/:id", async (req, res) => {
   try {
     const { id } = req.params; // invoiceNumber
@@ -150,9 +159,6 @@ app.put("/api/invoices/:id", async (req, res) => {
 });
 
 // Create a Cashfree payment order
-// ==========================
-// Create Order Endpoint
-// ==========================
 app.post("/api/create-order", async (req, res) => {
   console.log("📦 Received create-order request:", req.body);
 
@@ -162,9 +168,14 @@ app.post("/api/create-order", async (req, res) => {
     const orderAmount = parseFloat(amount);
 
     // Sanitize customer id (needed for Cashfree)
-    const sanitizedCustomerId = (clientEmail || invoiceNumber).replace(/[^a-zA-Z0-9_-]/g, "_");
+    const sanitizedCustomerId = (clientEmail || invoiceNumber || "cust")
+      .replace(/[^a-zA-Z0-9_-]/g, "_")
+      .slice(0, 64);
 
-    // ⚠️ Modern Cashfree requires "return_url" to be HTTPS and single slash
+    // Ensure FRONTEND_URL ends with a slash if not provided in env
+    const frontendBase = FRONTEND_URL.endsWith("/") ? FRONTEND_URL : `${FRONTEND_URL}/`;
+
+    // Modern Cashfree requires "return_url" to be HTTPS and single slash
     const createOrderBody = {
       order_id: `${invoiceNumber}-${Date.now()}`,
       order_amount: orderAmount,
@@ -176,7 +187,7 @@ app.post("/api/create-order", async (req, res) => {
         customer_phone: clientPhone || "9999999999",
       },
       order_meta: {
-        return_url: `${FRONTEND_URL}payment-success?order_id={order_id}`, // ✅ fixed double slash
+        return_url: `${frontendBase}payment-success?order_id={order_id}`,
       },
     };
 
@@ -187,11 +198,11 @@ app.post("/api/create-order", async (req, res) => {
       "Content-Type": "application/json",
     };
 
-    // ⚠️ Ensure this is the /orders endpoint for Cashfree v2
     const cfResp = await axios.post(`${CF_BASE_URL}/orders`, createOrderBody, { headers });
     const data = cfResp.data;
 
     // Save order and payment_session_id in DB
+    // Note: ensure your `payments` table has the columns used below.
     await pool.query(
       `INSERT INTO payments (order_id, cf_order_id, amount, currency, customer_email, customer_phone, payment_session_id, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
@@ -202,19 +213,19 @@ app.post("/api/create-order", async (req, res) => {
         currency || "INR",
         clientEmail,
         clientPhone || "9999999999",
-        data.payment_session_id, // ⚠️ This is what frontend will use as the "token"
+        data.payment_session_id,
         "PENDING",
       ]
     );
 
     console.log("✅ Cashfree order created successfully:", data);
 
-    // ⚠️ FRONTEND USES payment_session_id as "token" for load()
+    // FRONTEND USES payment_session_id as "token" for load()
     res.json({
       cf_order_id: data.cf_order_id,
       order_id: data.order_id,
-      payment_session_id: data.payment_session_id, // ✅ send this to frontend
-      env: CF_ENV, // optional, frontend can use to set PROD/TEST
+      payment_session_id: data.payment_session_id,
+      env: CF_ENV,
     });
   } catch (error) {
     console.error("❌ Error creating Cashfree order:", error?.response?.data || error.message);
@@ -225,9 +236,7 @@ app.post("/api/create-order", async (req, res) => {
   }
 });
 
-// ==========================
-// Verify Payment Endpoint
-// ==========================
+// Verify Payment Endpoint (polling style verification)
 app.post("/api/verify-payment", async (req, res) => {
   try {
     const { order_id } = req.body;
@@ -238,16 +247,26 @@ app.post("/api/verify-payment", async (req, res) => {
       "x-api-version": "2022-09-01",
     };
 
-    // ✅ Correct URL to fetch order status
     const verifyResp = await axios.get(`${CF_BASE_URL}/orders/${order_id}`, { headers });
     const status = verifyResp?.data?.order_status; // 'PAID', 'ACTIVE', etc.
     const success = status === "PAID";
 
-    // ✅ Update DB tables
-    await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [status, order_id]);
+    // Update DB payments table with latest status
     await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [status, order_id]);
 
     console.log("💰 Payment verified:", order_id, status);
+
+    // If paid, try to update corresponding invoice status automatically
+    if (success) {
+      try {
+        const lastHyphen = order_id.lastIndexOf("-");
+        const invoiceNum = lastHyphen > 0 ? order_id.slice(0, lastHyphen) : order_id;
+        await pool.query(`UPDATE invoices SET status='PAID' WHERE invoice_number=$1`, [invoiceNum]);
+        console.log("🔁 Invoice marked PAID for invoice_number:", invoiceNum);
+      } catch (err) {
+        console.warn("Could not auto-update invoice status after verification:", err.message);
+      }
+    }
 
     res.json({ success, status });
   } catch (error) {
@@ -256,16 +275,84 @@ app.post("/api/verify-payment", async (req, res) => {
   }
 });
 
-// ==========================
+// Cashfree Webhook Endpoint
+app.post("/api/webhook/cashfree", async (req, res) => {
+  try {
+    const signature = req.header("x-webhook-signature");
+    if (!signature) {
+      return res.status(400).send("Missing signature");
+    }
+
+    if (!CF_WEBHOOK_SECRET) {
+      console.warn("⚠️ Missing CASHFREE_WEBHOOK_SECRET env var");
+      return res.status(500).send("Server not configured");
+    }
+
+    const rawBody = req.body; // Buffer because of express.raw
+    const computed = crypto.createHmac("sha256", CF_WEBHOOK_SECRET).update(rawBody).digest("base64");
+
+    // signature from header is expected base64; compare securely
+    let signatureBuf;
+    let computedBuf;
+    try {
+      signatureBuf = Buffer.from(signature, "base64");
+      computedBuf = Buffer.from(computed, "base64");
+    } catch (e) {
+      console.warn("Webhook signature not base64:", e.message);
+      return res.status(400).send("Invalid signature format");
+    }
+
+    if (signatureBuf.length !== computedBuf.length) {
+      console.warn("❌ Invalid webhook signature length mismatch");
+      return res.status(400).send("Invalid signature");
+    }
+
+    const valid = crypto.timingSafeEqual(signatureBuf, computedBuf);
+    if (!valid) {
+      console.warn("❌ Invalid webhook signature");
+      return res.status(400).send("Invalid signature");
+    }
+
+    // Parse after signature verification
+    const event = JSON.parse(rawBody.toString("utf8"));
+    const orderId =
+      event?.data?.order?.order_id || event?.data?.order_id || event?.order_id || event?.order?.id;
+    const orderStatus =
+      event?.data?.order?.order_status || event?.data?.order_status || event?.order_status || event?.data?.status;
+
+    if (orderId && orderStatus) {
+      // Update payments table status
+      await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [orderStatus, orderId]);
+      console.log("📥 Webhook updated order:", orderId, orderStatus);
+
+      // If payment is PAID, try to update invoice status automatically
+      try {
+        if (orderStatus === "PAID") {
+          const lastHyphen = orderId.lastIndexOf("-");
+          const invoiceNum = lastHyphen > 0 ? orderId.slice(0, lastHyphen) : orderId;
+          await pool.query(`UPDATE invoices SET status='PAID' WHERE invoice_number=$1`, [invoiceNum]);
+          console.log("🔁 Webhook marked invoice PAID for invoice_number:", invoiceNum);
+        }
+      } catch (err) {
+        console.warn("Could not auto-update invoice from webhook:", err.message);
+      }
+    } else {
+      console.warn("⚠️ Webhook missing order details", { orderId, orderStatus });
+    }
+
+    // Respond fast
+    return res.status(200).send("OK");
+  } catch (err) {
+    console.error("Webhook processing error:", err?.message || err);
+    return res.status(400).send("Bad Request");
+  }
+});
+
 // Get Payment by order_id
-// ==========================
 app.get("/api/payments/:order_id", async (req, res) => {
   try {
     const { order_id } = req.params;
-    const result = await pool.query(
-      `SELECT * FROM payments WHERE order_id = $1 LIMIT 1`,
-      [order_id]
-    );
+    const result = await pool.query(`SELECT * FROM payments WHERE order_id = $1 LIMIT 1`, [order_id]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "Payment not found" });
@@ -277,7 +364,6 @@ app.get("/api/payments/:order_id", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
 
 // --------------------- TEST ROUTE ----------------------
 app.get("/", (req, res) => res.send("Backend is running!"));

@@ -50,7 +50,7 @@ app.use(
 );
 
 // Use raw body for Cashfree webhook to verify signature BEFORE json parsing
-app.use("/api/webhook/cashfree", express.raw({ type: "application/json" }));
+app.use(["/api/webhook/cashfree", "/api/cashfree/webhook"], express.raw({ type: "*/*" }));
 
 // JSON parser for all other routes
 app.use(bodyParser.json());
@@ -277,15 +277,23 @@ app.post("/api/verify-payment", async (req, res) => {
 });
 
 // Cashfree Webhook Endpoint
-app.post("/api/webhook/cashfree", async (req, res) => {
+const handleCashfreeWebhook = async (req, res) => {
   try {
+    const isProd = process.env.NODE_ENV === "production";
     const signature = req.header("x-webhook-signature");
     if (!signature) {
+      if (!isProd) {
+        console.warn("Webhook missing signature (non-production), returning 200 for test");
+        return res.status(200).send("OK");
+      }
       return res.status(400).send("Missing signature");
     }
 
     if (!CF_WEBHOOK_SECRET) {
       console.warn("⚠️ Missing CASHFREE_WEBHOOK_SECRET env var");
+      if (!isProd) {
+        return res.status(200).send("OK");
+      }
       return res.status(500).send("Server not configured");
     }
 
@@ -300,17 +308,26 @@ app.post("/api/webhook/cashfree", async (req, res) => {
       computedBuf = Buffer.from(computed, "base64");
     } catch (e) {
       console.warn("Webhook signature not base64:", e.message);
+      if (!isProd) {
+        return res.status(200).send("OK");
+      }
       return res.status(400).send("Invalid signature format");
     }
 
     if (signatureBuf.length !== computedBuf.length) {
       console.warn("❌ Invalid webhook signature length mismatch");
+      if (!isProd) {
+        return res.status(200).send("OK");
+      }
       return res.status(400).send("Invalid signature");
     }
 
     const valid = crypto.timingSafeEqual(signatureBuf, computedBuf);
     if (!valid) {
       console.warn("❌ Invalid webhook signature");
+      if (!isProd) {
+        return res.status(200).send("OK");
+      }
       return res.status(400).send("Invalid signature");
     }
 
@@ -341,13 +358,16 @@ app.post("/api/webhook/cashfree", async (req, res) => {
       console.warn("⚠️ Webhook missing order details", { orderId, orderStatus });
     }
 
-    // Respond fast
+    console.log("Cashfree webhook hit");
     return res.status(200).send("OK");
   } catch (err) {
     console.error("Webhook processing error:", err?.message || err);
     return res.status(400).send("Bad Request");
   }
-});
+};
+
+app.post("/api/webhook/cashfree", handleCashfreeWebhook);
+app.post("/api/cashfree/webhook", handleCashfreeWebhook);
 
 // Get Payment by order_id
 app.get("/api/payments/:order_id", async (req, res) => {

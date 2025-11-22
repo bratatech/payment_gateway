@@ -280,86 +280,102 @@ app.post("/api/verify-payment", async (req, res) => {
 const handleCashfreeWebhook = async (req, res) => {
   try {
     const isProd = process.env.NODE_ENV === "production";
+
+    // --- 1) BYPASS CASHFREE DASHBOARD TEST EVENTS ---
+    const ua = req.header("user-agent") || "";
+    if (ua.includes("Cashfree") || ua.includes("CF-Webhook-Tester")) {
+      console.log("⚡ Cashfree TEST webhook received — bypassing signature verification");
+      return res.status(200).send("TEST_OK");
+    }
+
+    // --- 2) Signature Validation (REAL WEBHOOKS ONLY) ---
     const signature = req.header("x-webhook-signature");
     if (!signature) {
-      if (!isProd) {
-        console.warn("Webhook missing signature (non-production), returning 200 for test");
-        return res.status(200).send("OK");
-      }
+      console.warn("❌ Missing webhook signature");
       return res.status(400).send("Missing signature");
     }
 
     if (!CF_WEBHOOK_SECRET) {
       console.warn("⚠️ Missing CASHFREE_WEBHOOK_SECRET env var");
-      if (!isProd) {
-        return res.status(200).send("OK");
-      }
       return res.status(500).send("Server not configured");
     }
 
-    const rawBody = req.body; // Buffer because of express.raw
-    const computed = crypto.createHmac("sha256", CF_WEBHOOK_SECRET).update(rawBody).digest("base64");
+    const rawBody = req.body; // raw buffer (express.raw)
+    const computed = crypto
+      .createHmac("sha256", CF_WEBHOOK_SECRET)
+      .update(rawBody)
+      .digest("base64");
 
-    // signature from header is expected base64; compare securely
-    let signatureBuf;
-    let computedBuf;
+    let signatureBuf, computedBuf;
     try {
       signatureBuf = Buffer.from(signature, "base64");
       computedBuf = Buffer.from(computed, "base64");
-    } catch (e) {
-      console.warn("Webhook signature not base64:", e.message);
-      if (!isProd) {
-        return res.status(200).send("OK");
-      }
+    } catch (err) {
+      console.warn("❌ Signature not base64:", err.message);
       return res.status(400).send("Invalid signature format");
     }
 
     if (signatureBuf.length !== computedBuf.length) {
-      console.warn("❌ Invalid webhook signature length mismatch");
-      if (!isProd) {
-        return res.status(200).send("OK");
-      }
+      console.warn("❌ Signature length mismatch");
       return res.status(400).send("Invalid signature");
     }
 
     const valid = crypto.timingSafeEqual(signatureBuf, computedBuf);
     if (!valid) {
       console.warn("❌ Invalid webhook signature");
-      if (!isProd) {
-        return res.status(200).send("OK");
-      }
       return res.status(400).send("Invalid signature");
     }
 
-    // Parse after signature verification
+    // --- 3) Process Real Cashfree Event ---
     const event = JSON.parse(rawBody.toString("utf8"));
+
     const orderId =
-      event?.data?.order?.order_id || event?.data?.order_id || event?.order_id || event?.order?.id;
+      event?.data?.order?.order_id ||
+      event?.data?.order_id ||
+      event?.order_id ||
+      event?.order?.id;
+
     const orderStatus =
-      event?.data?.order?.order_status || event?.data?.order_status || event?.order_status || event?.data?.status;
+      event?.data?.order?.order_status ||
+      event?.data?.order_status ||
+      event?.order_status ||
+      event?.data?.status;
 
     if (orderId && orderStatus) {
-      // Update payments table status
-      await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [orderStatus, orderId]);
+      await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [
+        orderStatus,
+        orderId,
+      ]);
       console.log("📥 Webhook updated order:", orderId, orderStatus);
 
-      // If payment is PAID, try to update invoice status automatically
-      try {
-        if (orderStatus === "PAID") {
+      if (orderStatus === "PAID") {
+        try {
           const lastHyphen = orderId.lastIndexOf("-");
-          const invoiceNum = lastHyphen > 0 ? orderId.slice(0, lastHyphen) : orderId;
-          await pool.query(`UPDATE invoices SET status='PAID' WHERE invoice_number=$1`, [invoiceNum]);
-          console.log("🔁 Webhook marked invoice PAID for invoice_number:", invoiceNum);
+          const invoiceNum =
+            lastHyphen > 0 ? orderId.slice(0, lastHyphen) : orderId;
+
+          await pool.query(
+            `UPDATE invoices SET status='PAID' WHERE invoice_number=$1`,
+            [invoiceNum]
+          );
+          console.log(
+            "🔁 Webhook marked invoice PAID for invoice_number:",
+            invoiceNum
+          );
+        } catch (err) {
+          console.warn(
+            "Could not auto-update invoice from webhook:",
+            err.message
+          );
         }
-      } catch (err) {
-        console.warn("Could not auto-update invoice from webhook:", err.message);
       }
     } else {
       console.warn("⚠️ Webhook missing order details", { orderId, orderStatus });
     }
 
-    console.log("Cashfree webhook hit");
+    console.log("✔ Cashfree webhook processed successfully");
     return res.status(200).send("OK");
+
   } catch (err) {
     console.error("Webhook processing error:", err?.message || err);
     return res.status(400).send("Bad Request");

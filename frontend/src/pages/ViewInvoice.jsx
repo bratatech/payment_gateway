@@ -21,28 +21,33 @@ export default function ViewInvoice() {
     try {
       const response = await axios.get(`${API_BASE}/api/invoices/${encodeURIComponent(targetEmail)}`);
       const normalizedData = (Array.isArray(response.data) ? response.data : [response.data]).map(
-        (invoice) => ({
-          ...invoice,
-          invoiceNumber: invoice.invoiceNumber || invoice.invoice_number,
-          clientName: invoice.clientName || invoice.client_name,
-          clientEmail: invoice.clientEmail || invoice.client_email,
-          clientPhone: invoice.clientPhone || invoice.client_phone,
-          clientAddress: invoice.clientAddress || invoice.client_address,
-          taxRate: Number(invoice.taxRate ?? invoice.tax_rate),
-          items: (() => {
-            if (typeof invoice.items === "string") {
-              try {
-                return JSON.parse(invoice.items);
-              } catch {
-                return [];
+        (invoice) => {
+          const statusUpper = String(invoice.status || "").toUpperCase();
+          return {
+            ...invoice,
+            invoiceNumber: invoice.invoiceNumber || invoice.invoice_number,
+            clientName: invoice.clientName || invoice.client_name,
+            clientEmail: invoice.clientEmail || invoice.client_email,
+            clientPhone: invoice.clientPhone || invoice.client_phone,
+            clientAddress: invoice.clientAddress || invoice.client_address,
+            paymentId: invoice.paymentId || invoice.payment_id,
+            status: statusUpper,
+            taxRate: Number(invoice.taxRate ?? invoice.tax_rate),
+            items: (() => {
+              if (typeof invoice.items === "string") {
+                try {
+                  return JSON.parse(invoice.items);
+                } catch {
+                  return [];
+                }
               }
-            }
-            return Array.isArray(invoice.items) ? invoice.items : [];
-          })(),
-          subtotal: Number(invoice.subtotal) || 0,
-          tax: Number(invoice.tax) || 0,
-          total: Number(invoice.total) || 0,
-        })
+              return Array.isArray(invoice.items) ? invoice.items : [];
+            })(),
+            subtotal: Number(invoice.subtotal) || 0,
+            tax: Number(invoice.tax) || 0,
+            total: Number(invoice.total) || 0,
+          };
+        }
       );
 
       setInvoices(normalizedData);
@@ -51,6 +56,67 @@ export default function ViewInvoice() {
       console.error("Error fetching invoices:", err);
       setError(err.response?.status === 404 ? "No invoices found for this email." : "Something went wrong!");
     } finally {
+      setLoading(false);
+    }
+  };
+
+  // 🔁 Handle Refund
+  const handleRefund = async (invoiceData) => {
+    if (!invoiceData.paymentId) {
+      alert("No payment reference found for this invoice. Cannot initiate refund.");
+      return;
+    }
+    setLoading(true);
+    try {
+      // 1) Initiate refund on backend
+      await axios.post(`${API_BASE}/api/refund`, {
+        order_id: invoiceData.paymentId,
+        amount: invoiceData.total,
+      });
+
+      // 2) Update UI to show initiating state immediately
+      setInvoices((prev) =>
+        prev.map((inv) =>
+          inv.invoiceNumber === invoiceData.invoiceNumber
+            ? { ...inv, status: "REFUND_INITIATING" }
+            : inv
+        )
+      );
+
+      // 3) Poll for final status via invoice fetch (webhook will update DB)
+      const maxAttempts = 20; // ~60s if interval is 3s
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts += 1;
+        try {
+          const response = await axios.get(`${API_BASE}/api/invoices/${encodeURIComponent(invoiceData.clientEmail)}`);
+          const list = Array.isArray(response.data) ? response.data : [response.data];
+          const updated = list.find((i) => (i.invoice_number || i.invoiceNumber) === invoiceData.invoiceNumber);
+          if (updated) {
+            const statusUpper = String(updated.status || "").toUpperCase();
+            setInvoices((prev) =>
+              prev.map((inv) =>
+                inv.invoiceNumber === invoiceData.invoiceNumber
+                  ? { ...inv, status: statusUpper }
+                  : inv
+              )
+            );
+            if (statusUpper === "REFUNDED" || statusUpper === "REFUND_FAILED") {
+              clearInterval(poll);
+              setLoading(false);
+            }
+          }
+        } catch (e) {
+          // keep polling silently
+        }
+        if (attempts >= maxAttempts) {
+          clearInterval(poll);
+          setLoading(false);
+        }
+      }, 3000);
+    } catch (err) {
+      console.error("Error initiating refund:", err);
+      alert("Failed to initiate refund");
       setLoading(false);
     }
   };
@@ -72,70 +138,69 @@ export default function ViewInvoice() {
   }, [location.search]);
 
   // 💳 Handle Cashfree Payment
-const handlePayment = async (invoiceData) => {
-  if (!invoiceData.clientName || !invoiceData.clientEmail || invoiceData.total <= 0) {
-    alert("Client details missing or invalid invoice total.");
-    return;
-  }
+  const handlePayment = async (invoiceData) => {
+    if (!invoiceData.clientName || !invoiceData.clientEmail || invoiceData.total <= 0) {
+      alert("Client details missing or invalid invoice total.");
+      return;
+    }
 
-  setLoading(true);
-
-  try {
-    // Step 1: Create order on backend
-    const orderResponse = await axios.post(`${API_BASE}/api/create-order`, {
-      amount: invoiceData.total,
-      currency: "INR",
-      invoiceNumber: invoiceData.invoiceNumber,
-      clientName: invoiceData.clientName,
-      clientEmail: invoiceData.clientEmail,
-      clientPhone: invoiceData.clientPhone || "9999999999",
-      items: invoiceData.items,
-    });
-
-    const { order_id, payment_session_id } = orderResponse.data;
-
-    if (!payment_session_id) throw new Error("Missing payment session ID from backend");
-
-    // Step 2: Initialize Cashfree checkout (correct usage)
-    const cashfree = await load({ mode: "production" }); // Don't pass token here
-
-    await cashfree.checkout({
-      paymentSessionId: payment_session_id, // ← this is the actual session token
-      redirectTarget: "_self",
-    });
-
-    // Step 3: Verify payment after redirection
-    const verifyResponse = await axios.post(`${API_BASE}/api/verify-payment`, { order_id });
-
-    if (verifyResponse.data.success) {
-      alert("Payment successful!");
-
-      // Step 4: Update invoice status
-      await axios.put(`${API_BASE}/api/invoices/${invoiceData.id || invoiceData.invoiceNumber}`, {
-        status: "paid",
-        paymentId: order_id,
+    setLoading(true);
+    try {
+      // Step 1: Create order on backend
+      const orderResponse = await axios.post(`${API_BASE}/api/create-order`, {
+        amount: invoiceData.total,
+        currency: "INR",
+        invoiceNumber: invoiceData.invoiceNumber,
+        clientName: invoiceData.clientName,
+        clientEmail: invoiceData.clientEmail,
+        clientPhone: invoiceData.clientPhone || "9999999999",
+        items: invoiceData.items,
       });
 
-      // Step 5: Update UI instantly
-      setInvoices((prev) =>
-        prev.map((inv) =>
-          inv.invoiceNumber === invoiceData.invoiceNumber
-            ? { ...inv, status: "paid" }
-            : inv
-        )
-      );
+      const { order_id, payment_session_id } = orderResponse.data;
 
-      window.location.assign(`${FRONTEND_BASE}/payment-success?order_id=${order_id}`);
-    } else {
-      alert("Payment verification failed!");
+      if (!payment_session_id) throw new Error("Missing payment session ID from backend");
+
+      // Step 2: Initialize Cashfree checkout (correct usage)
+      const cashfree = await load({ mode: "production" }); // Don't pass token here
+
+      await cashfree.checkout({
+        paymentSessionId: payment_session_id, // ← this is the actual session token
+        redirectTarget: "_self",
+      });
+
+      // Step 3: Verify payment after redirection
+      const verifyResponse = await axios.post(`${API_BASE}/api/verify-payment`, { order_id });
+
+      if (verifyResponse.data.success) {
+        alert("Payment successful!");
+
+        // Step 4: Update invoice status
+        await axios.put(`${API_BASE}/api/invoices/${invoiceData.id || invoiceData.invoiceNumber}`, {
+          status: "paid",
+          paymentId: order_id,
+        });
+
+        // Step 5: Update UI instantly
+        setInvoices((prev) =>
+          prev.map((inv) =>
+            inv.invoiceNumber === invoiceData.invoiceNumber
+              ? { ...inv, status: "paid" }
+              : inv
+          )
+        );
+
+        window.location.assign(`${FRONTEND_BASE}/payment-success?order_id=${order_id}`);
+      } else {
+        alert("Payment verification failed!");
+      }
+    } catch (err) {
+      console.error("Error in payment flow:", err);
+      alert("Error initiating payment!");
+    } finally {
+      setLoading(false);
     }
-  } catch (err) {
-    console.error("Error in payment flow:", err);
-    alert("Error initiating payment!");
-  } finally {
-    setLoading(false);
-  }
-};
+  };
 
   return (
     <div className="invoice-page">
@@ -237,13 +302,25 @@ const handlePayment = async (invoiceData) => {
               </div>
 
               {/* 💳 Pay Now Button */}
-              {invoice.status !== "paid" && (
+              {invoice.status !== "PAID" && invoice.status !== "REFUNDED" && !invoice.status?.startsWith("REFUND_") && (
                 <button
                   className="pay-now-btn"
                   onClick={() => handlePayment(invoice)}
                   disabled={loading}
                 >
                   {loading ? "Processing..." : "Pay Now 💰"}
+                </button>
+              )}
+
+              {/* 🔁 Refund Button (visible for PAID invoices) */}
+              {invoice.status === "PAID" && (
+                <button
+                  className="pay-now-btn"
+                  onClick={() => handleRefund(invoice)}
+                  disabled={loading}
+                  style={{ marginLeft: 8 }}
+                >
+                  {loading ? "Initiating..." : "Refund 💳"}
                 </button>
               )}
             </div>

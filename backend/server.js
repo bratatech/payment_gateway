@@ -64,6 +64,64 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
+// Initiate Refund for an order
+app.post("/api/refund", async (req, res) => {
+  try {
+    const { order_id, amount } = req.body;
+    if (!order_id) {
+      return res.status(400).json({ error: "order_id is required" });
+    }
+
+    let refundAmount = Number(amount);
+    if (!refundAmount || Number.isNaN(refundAmount)) {
+      try {
+        const q = await pool.query(`SELECT amount FROM payments WHERE order_id=$1 LIMIT 1`, [order_id]);
+        if (q.rows?.[0]?.amount) {
+          refundAmount = Number(q.rows[0].amount);
+        }
+      } catch {}
+    }
+    if (!refundAmount || Number.isNaN(refundAmount)) {
+      return res.status(400).json({ error: "Valid refund amount not found" });
+    }
+
+    const headers = {
+      "x-client-id": CF_APP_ID,
+      "x-client-secret": CF_SECRET,
+      "x-api-version": "2022-09-01",
+      "Content-Type": "application/json",
+    };
+
+    const refund_id = `refund_${order_id}_${Date.now()}`.slice(0, 64);
+    const body = {
+      refund_amount: refundAmount,
+      refund_id,
+    };
+
+    const resp = await axios.post(`${CF_BASE_URL}/orders/${order_id}/refunds`, body, { headers });
+
+    try {
+      await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [
+        "REFUND_INITIATED",
+        order_id,
+      ]);
+    } catch {}
+
+    try {
+      const lastHyphen = order_id.lastIndexOf("-");
+      const invoiceNum = lastHyphen > 0 ? order_id.slice(0, lastHyphen) : order_id;
+      await pool.query(`UPDATE invoices SET status=$1 WHERE invoice_number=$2`, [
+        "REFUND_INITIATING",
+        invoiceNum,
+      ]);
+    } catch {}
+
+    res.json({ success: true, refund_id, cashfree: resp.data });
+  } catch (error) {
+    res.status(500).json({ error: "Refund initiation failed", details: error?.response?.data || error.message });
+  }
+});
+
 console.log("🧩 Connected DB URL:", process.env.DATABASE_URL);
 
 // --------------------- CASHFREE CONFIG ----------------------
@@ -348,6 +406,50 @@ const handleCashfreeWebhook = async (req, res) => {
 
     // --- 3) Process Real Cashfree Event ---
     const event = JSON.parse(rawBody.toString("utf8"));
+
+    // Refund webhooks handling (2025-01-01): type like REFUND_STATUS_WEBHOOK
+    const eventType = (event?.type || "").toUpperCase();
+    if (eventType.includes("REFUND")) {
+      try {
+        const refund = event?.data?.refund || {};
+        const rOrderId = refund?.order_id;
+        const refundStatus = (refund?.refund_status || "").toUpperCase();
+
+        // Map Cashfree refund_status to our internal statuses
+        let mapped = "REFUND_PROCESSING";
+        if (refundStatus === "SUCCESS") mapped = "REFUNDED";
+        else if (refundStatus === "CANCELLED" || refundStatus === "FAILED") mapped = "REFUND_FAILED";
+
+        if (rOrderId) {
+          const upd = await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [mapped, rOrderId]);
+          if (upd.rowCount === 0) {
+            const cfOrderId =
+              event?.data?.cf_order_id ||
+              event?.data?.payment_gateway_details?.gateway_order_id ||
+              event?.payment_gateway_details?.gateway_order_id ||
+              event?.order?.cf_order_id;
+            if (cfOrderId) {
+              await pool.query(`UPDATE payments SET status=$1 WHERE cf_order_id=$2`, [mapped, cfOrderId]);
+            }
+          }
+
+          if (mapped === "REFUNDED") {
+            const lastHyphen = rOrderId.lastIndexOf("-");
+            const invoiceNum = lastHyphen > 0 ? rOrderId.slice(0, lastHyphen) : rOrderId;
+            await pool.query(`UPDATE invoices SET status=$1 WHERE invoice_number=$2`, [
+              "REFUNDED",
+              invoiceNum,
+            ]);
+          }
+        }
+
+        console.log("✔ Refund webhook processed");
+        return res.status(200).send("OK");
+      } catch (e) {
+        console.error("Refund webhook processing error:", e?.message || e);
+        return res.status(400).send("Bad Request");
+      }
+    }
 
     const orderId =
       event?.data?.order?.order_id ||

@@ -286,61 +286,64 @@ const handleCashfreeWebhook = async (req, res) => {
 
     // --- 1) BYPASS CASHFREE DASHBOARD TEST EVENTS ---
     const ua = req.header("user-agent") || "";
-    if (ua.includes("Cashfree") || ua.includes("CF-Webhook-Tester")) {
-      console.log("⚡ Cashfree TEST webhook received — bypassing signature verification");
-      return res.status(200).send("TEST_OK");
+    const isTestWebhook = ua.includes("Cashfree") || ua.includes("CF-Webhook-Tester");
+    if (isTestWebhook) {
+      console.log("⚡ Cashfree TEST webhook received — skipping signature verification but processing payload");
     }
 
     // --- 2) Signature Validation (REAL WEBHOOKS ONLY) ---
+    const rawBody = req.body; // raw buffer (express.raw)
     const signature =
       req.header("x-webhook-signature") ||
       req.header("x-cf-signature");
     const timestamp =
       req.header("x-webhook-timestamp") ||
       req.header("x-cf-timestamp");
-    if (!signature) {
-      console.warn("❌ Missing webhook signature");
-      return res.status(400).send("Missing signature");
-    }
 
-    if (!timestamp) {
-      console.warn("❌ Missing webhook timestamp");
-      return res.status(400).send("Missing timestamp");
-    }
+    if (!isTestWebhook) {
+      if (!signature) {
+        console.warn("❌ Missing webhook signature");
+        return res.status(400).send("Missing signature");
+      }
 
-    // Cashfree docs: HMAC-SHA256 over (timestamp + rawBody) using client secret, base64-encoded
-    const secretForWebhook = CF_SECRET || CF_WEBHOOK_SECRET;
-    if (!secretForWebhook) {
-      console.warn("⚠️ Missing Cashfree secret for webhook verification");
-      return res.status(500).send("Server not configured");
-    }
+      if (!timestamp) {
+        console.warn("❌ Missing webhook timestamp");
+        return res.status(400).send("Missing timestamp");
+      }
 
-    const rawBody = req.body; // raw buffer (express.raw)
-    const payloadToSign = timestamp + rawBody.toString("utf8");
+      // Cashfree docs: HMAC-SHA256 over (timestamp + rawBody) using client secret, base64-encoded
+      const secretForWebhook = CF_SECRET || CF_WEBHOOK_SECRET;
+      if (!secretForWebhook) {
+        console.warn("⚠️ Missing Cashfree secret for webhook verification");
+        return res.status(500).send("Server not configured");
+      }
 
-    const computed = crypto
-      .createHmac("sha256", secretForWebhook)
-      .update(payloadToSign)
-      .digest("base64");
+      const payloadToSign = timestamp + rawBody.toString("utf8");
 
-    let signatureBuf, computedBuf;
-    try {
-      signatureBuf = Buffer.from(signature, "base64");
-      computedBuf = Buffer.from(computed, "base64");
-    } catch (err) {
-      console.warn("❌ Signature not base64:", err.message);
-      return res.status(400).send("Invalid signature format");
-    }
+      const computed = crypto
+        .createHmac("sha256", secretForWebhook)
+        .update(payloadToSign)
+        .digest("base64");
 
-    if (signatureBuf.length !== computedBuf.length) {
-      console.warn("❌ Signature length mismatch");
-      return res.status(400).send("Invalid signature");
-    }
+      let signatureBuf, computedBuf;
+      try {
+        signatureBuf = Buffer.from(signature, "base64");
+        computedBuf = Buffer.from(computed, "base64");
+      } catch (err) {
+        console.warn("❌ Signature not base64:", err.message);
+        return res.status(400).send("Invalid signature format");
+      }
 
-    const valid = crypto.timingSafeEqual(signatureBuf, computedBuf);
-    if (!valid) {
-      console.warn("❌ Invalid webhook signature");
-      return res.status(400).send("Invalid signature");
+      if (signatureBuf.length !== computedBuf.length) {
+        console.warn("❌ Signature length mismatch");
+        return res.status(400).send("Invalid signature");
+      }
+
+      const valid = crypto.timingSafeEqual(signatureBuf, computedBuf);
+      if (!valid) {
+        console.warn("❌ Invalid webhook signature");
+        return res.status(400).send("Invalid signature");
+      }
     }
 
     // --- 3) Process Real Cashfree Event ---
@@ -360,14 +363,40 @@ const handleCashfreeWebhook = async (req, res) => {
       event?.data?.payment?.payment_status ||
       event?.payment?.payment_status;
 
+    const orderStatusUpper = typeof orderStatus === "string" ? orderStatus.toUpperCase() : orderStatus;
+    const isSuccessStatus = orderStatusUpper === "PAID" || orderStatusUpper === "SUCCESS";
+
     if (orderId && orderStatus) {
-      await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [
+      const upd = await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [
         orderStatus,
         orderId,
       ]);
-      console.log("📥 Webhook updated order:", orderId, orderStatus);
+      if (upd.rowCount === 0) {
+        console.warn("⚠️ No payment row updated for order_id:", orderId);
+        // Try fallback using Cashfree order id (gateway_order_id maps to cf_order_id saved in DB)
+        const cfOrderId =
+          event?.data?.cf_order_id ||
+          event?.data?.payment_gateway_details?.gateway_order_id ||
+          event?.payment_gateway_details?.gateway_order_id ||
+          event?.order?.cf_order_id;
+        if (cfOrderId) {
+          const upd2 = await pool.query(`UPDATE payments SET status=$1 WHERE cf_order_id=$2`, [
+            orderStatus,
+            cfOrderId,
+          ]);
+          if (upd2.rowCount === 0) {
+            console.warn("⚠️ No payment row updated for cf_order_id:", cfOrderId);
+          } else {
+            console.log("📥 Webhook updated by cf_order_id:", cfOrderId, orderStatus);
+          }
+        } else {
+          console.warn("ℹ️ No cf_order_id present in webhook payload for fallback update");
+        }
+      } else {
+        console.log("📥 Webhook updated order:", orderId, orderStatus);
+      }
 
-      if (orderStatus === "PAID") {
+      if (isSuccessStatus) {
         try {
           const lastHyphen = orderId.lastIndexOf("-");
           const invoiceNum =

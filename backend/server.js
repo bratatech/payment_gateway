@@ -1,4 +1,3 @@
-// server.mjs
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
@@ -26,6 +25,12 @@ const CSP_CONNECT_SRC = [
   FRONTEND_URL,
 ];
 
+// Use raw body for Cashfree webhook to verify signature BEFORE json parsing
+app.use(
+  ["/api/webhook/cashfree", "/api/cashfree/webhook"],
+  express.raw({ type: "application/json" })
+);
+
 app.use(
   helmet.contentSecurityPolicy({
     directives: {
@@ -49,8 +54,6 @@ app.use(
   })
 );
 
-// Use raw body for Cashfree webhook to verify signature BEFORE json parsing
-app.use(["/api/webhook/cashfree", "/api/cashfree/webhook"], express.raw({ type: "*/*" }));
 
 // JSON parser for all other routes
 app.use(bodyParser.json());
@@ -289,21 +292,35 @@ const handleCashfreeWebhook = async (req, res) => {
     }
 
     // --- 2) Signature Validation (REAL WEBHOOKS ONLY) ---
-    const signature = req.header("x-webhook-signature");
+    const signature =
+      req.header("x-webhook-signature") ||
+      req.header("x-cf-signature");
+    const timestamp =
+      req.header("x-webhook-timestamp") ||
+      req.header("x-cf-timestamp");
     if (!signature) {
       console.warn("❌ Missing webhook signature");
       return res.status(400).send("Missing signature");
     }
 
-    if (!CF_WEBHOOK_SECRET) {
-      console.warn("⚠️ Missing CASHFREE_WEBHOOK_SECRET env var");
+    if (!timestamp) {
+      console.warn("❌ Missing webhook timestamp");
+      return res.status(400).send("Missing timestamp");
+    }
+
+    // Cashfree docs: HMAC-SHA256 over (timestamp + rawBody) using client secret, base64-encoded
+    const secretForWebhook = CF_SECRET || CF_WEBHOOK_SECRET;
+    if (!secretForWebhook) {
+      console.warn("⚠️ Missing Cashfree secret for webhook verification");
       return res.status(500).send("Server not configured");
     }
 
     const rawBody = req.body; // raw buffer (express.raw)
+    const payloadToSign = timestamp + rawBody.toString("utf8");
+
     const computed = crypto
-      .createHmac("sha256", CF_WEBHOOK_SECRET)
-      .update(rawBody)
+      .createHmac("sha256", secretForWebhook)
+      .update(payloadToSign)
       .digest("base64");
 
     let signatureBuf, computedBuf;
@@ -339,7 +356,9 @@ const handleCashfreeWebhook = async (req, res) => {
       event?.data?.order?.order_status ||
       event?.data?.order_status ||
       event?.order_status ||
-      event?.data?.status;
+      event?.data?.status ||
+      event?.data?.payment?.payment_status ||
+      event?.payment?.payment_status;
 
     if (orderId && orderStatus) {
       await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [

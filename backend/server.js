@@ -67,15 +67,44 @@ const pool = new Pool({
 // Initiate Refund for an order
 app.post("/api/refund", async (req, res) => {
   try {
-    const { order_id, amount } = req.body;
-    if (!order_id) {
-      return res.status(400).json({ error: "order_id is required" });
+    const { order_id, amount, invoice_number, invoiceNumber } = req.body;
+    let orderId = order_id;
+    let discoveredPaymentAmount;
+    if (!orderId) {
+      const invNum = invoice_number || invoiceNumber;
+      if (invNum) {
+        try {
+          const invRes = await pool.query(`SELECT payment_id FROM invoices WHERE invoice_number=$1 LIMIT 1`, [invNum]);
+          const pid = invRes.rows?.[0]?.payment_id;
+          if (pid) orderId = pid;
+        } catch {}
+        if (!orderId) {
+          try {
+            const p = await pool.query(`SELECT order_id, amount, status FROM payments WHERE order_id LIKE $1 ORDER BY order_id DESC LIMIT 1`, [`${invNum}-%`]);
+            if (p.rows?.[0]?.order_id) {
+              orderId = p.rows[0].order_id;
+              if (p.rows?.[0]?.amount) discoveredPaymentAmount = p.rows[0].amount;
+            }
+          } catch {}
+        }
+      }
+    }
+    if (!orderId) {
+      return res.status(400).json({ error: "order_id or invoice_number is required" });
+    }
+    if (!process.env.CASHFREE_APP_ID || !process.env.CASHFREE_SECRET) {
+      console.error("Refund init error: Missing Cashfree credentials");
+      return res.status(500).json({ error: "Server misconfigured: Cashfree credentials missing" });
     }
 
     let refundAmount = Number(amount);
+    if ((!refundAmount || Number.isNaN(refundAmount)) && typeof discoveredPaymentAmount !== "undefined") {
+      const num = Number(discoveredPaymentAmount);
+      if (!Number.isNaN(num)) refundAmount = num;
+    }
     if (!refundAmount || Number.isNaN(refundAmount)) {
       try {
-        const q = await pool.query(`SELECT amount FROM payments WHERE order_id=$1 LIMIT 1`, [order_id]);
+        const q = await pool.query(`SELECT amount FROM payments WHERE order_id=$1 LIMIT 1`, [orderId]);
         if (q.rows?.[0]?.amount) {
           refundAmount = Number(q.rows[0].amount);
         }
@@ -84,32 +113,42 @@ app.post("/api/refund", async (req, res) => {
     if (!refundAmount || Number.isNaN(refundAmount)) {
       return res.status(400).json({ error: "Valid refund amount not found" });
     }
+    if (!(refundAmount > 0)) {
+      return res.status(400).json({ error: "Refund amount must be greater than 0" });
+    }
 
     const headers = {
-      "x-client-id": CF_APP_ID,
-      "x-client-secret": CF_SECRET,
+      "x-client-id": process.env.CASHFREE_APP_ID,
+      "x-client-secret": process.env.CASHFREE_SECRET,
       "x-api-version": "2022-09-01",
       "Content-Type": "application/json",
     };
 
-    const refund_id = `refund_${order_id}_${Date.now()}`.slice(0, 64);
+    const refund_id = `refund_${orderId}_${Date.now()}`.slice(0, 64);
     const body = {
       refund_amount: refundAmount,
       refund_id,
+      refund_speed: "STANDARD",
     };
 
-    const resp = await axios.post(`${CF_BASE_URL}/orders/${order_id}/refunds`, body, { headers });
+    const resp = await axios.post(`${process.env.CASHFREE_ENV === "production" ? "https://api.cashfree.com/pg" : "https://sandbox.cashfree.com/pg"}/orders/${orderId}/refunds`, body, { headers });
+    console.log("Refund initiated with Cashfree:", {
+      order_id: orderId,
+      refund_id,
+      refund_amount: refundAmount,
+      status: resp?.status,
+    });
 
     try {
       await pool.query(`UPDATE payments SET status=$1 WHERE order_id=$2`, [
         "REFUND_INITIATED",
-        order_id,
+        orderId,
       ]);
     } catch {}
 
     try {
-      const lastHyphen = order_id.lastIndexOf("-");
-      const invoiceNum = lastHyphen > 0 ? order_id.slice(0, lastHyphen) : order_id;
+      const lastHyphen = orderId.lastIndexOf("-");
+      const invoiceNum = lastHyphen > 0 ? orderId.slice(0, lastHyphen) : orderId;
       await pool.query(`UPDATE invoices SET status=$1 WHERE invoice_number=$2`, [
         "REFUND_INITIATING",
         invoiceNum,
@@ -118,7 +157,9 @@ app.post("/api/refund", async (req, res) => {
 
     res.json({ success: true, refund_id, cashfree: resp.data });
   } catch (error) {
-    res.status(500).json({ error: "Refund initiation failed", details: error?.response?.data || error.message });
+    const details = error?.response?.data || error.message;
+    console.error("Refund initiation failed:", details);
+    res.status(500).json({ error: "Refund initiation failed", details });
   }
 });
 
@@ -323,7 +364,7 @@ app.post("/api/verify-payment", async (req, res) => {
       try {
         const lastHyphen = order_id.lastIndexOf("-");
         const invoiceNum = lastHyphen > 0 ? order_id.slice(0, lastHyphen) : order_id;
-        await pool.query(`UPDATE invoices SET status='PAID' WHERE invoice_number=$1`, [invoiceNum]);
+        await pool.query(`UPDATE invoices SET status='PAID', payment_id=$2 WHERE invoice_number=$1`, [invoiceNum, order_id]);
         console.log("🔁 Invoice marked PAID for invoice_number:", invoiceNum);
       } catch (err) {
         console.warn("Could not auto-update invoice status after verification:", err.message);
@@ -505,8 +546,8 @@ const handleCashfreeWebhook = async (req, res) => {
             lastHyphen > 0 ? orderId.slice(0, lastHyphen) : orderId;
 
           await pool.query(
-            `UPDATE invoices SET status='PAID' WHERE invoice_number=$1`,
-            [invoiceNum]
+            `UPDATE invoices SET status='PAID', payment_id=$2 WHERE invoice_number=$1`,
+            [invoiceNum, orderId]
           );
           console.log(
             "🔁 Webhook marked invoice PAID for invoice_number:",

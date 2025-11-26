@@ -62,17 +62,13 @@ export default function ViewInvoice() {
 
   // 🔁 Handle Refund
   const handleRefund = async (invoiceData) => {
-    if (!invoiceData.paymentId) {
-      alert("No payment reference found for this invoice. Cannot initiate refund.");
-      return;
-    }
     setLoading(true);
     try {
       // 1) Initiate refund on backend
-      await axios.post(`${API_BASE}/api/refund`, {
-        order_id: invoiceData.paymentId,
-        amount: invoiceData.total,
-      });
+      const payload = invoiceData.paymentId
+        ? { order_id: invoiceData.paymentId, amount: invoiceData.total }
+        : { invoice_number: invoiceData.invoiceNumber, amount: invoiceData.total };
+      await axios.post(`${API_BASE}/api/refund`, payload);
 
       // 2) Update UI to show initiating state immediately
       setInvoices((prev) =>

@@ -44,7 +44,7 @@ Fallback logic for inconsistent event fields
 
 ✅ Refund Flow
 
-Trigger refunds programmatically
+Trigger refunds through Cashfree API
 
 Process refund webhooks
 
@@ -64,8 +64,6 @@ Backend	Node.js, Express
 Database	PostgreSQL
 Payment Gateway	Cashfree PG API
 Auth / Security	HMAC-SHA256 Webhook Verification
-Deployment	Render / AWS / Any Express host
-
 # Payment Gateway (Cashfree)
 
 End-to-end sample to create invoices, accept payments via Cashfree PG, verify via API/webhooks, and manage refunds.
@@ -283,5 +281,6 @@ CREATE TABLE IF NOT EXISTS payments (
 - **Invoice not updated after payment**: Use `/api/verify-payment`; confirm webhook is reaching server
 - **Refund stuck in initiating**: Wait for webhook; verify Cashfree dashboard and server logs
 
----How to handle the webhook
+Flowchart
 
+https://github.com/user-attachments/assets/217f6b24-f5e1-4e55-b575-dd6e17174bb7
